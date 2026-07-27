@@ -1,3 +1,5 @@
+"""量化能力的查询、训练与扫描应用入口。"""
+
 from trade_agent.capabilities.quantitative.contracts import (
     CapabilityCommand,
     CapabilityQuery,
@@ -17,7 +19,7 @@ from .dataset import (
 
 
 class QuantitativeApplication:
-    """Phase-one public application boundary; this is not an Agent."""
+    """量化能力的一阶段公共应用边界, 不是业务 Agent。"""
 
     async def execute(self, command: CapabilityCommand) -> CapabilityResult:
         raise NotImplementedError(f"quantitative command 尚未实现: {command.command_id}")

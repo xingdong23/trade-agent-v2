@@ -1,4 +1,11 @@
-"""只调用 PlanningService 的交易计划薄 tool adapters。"""
+"""Planning capability 的薄 Tool adapter。
+
+这些 Tool 不承载业务规则，只负责三件事：
+
+- 声明 Agent 可见的 manifest；
+- 从 ``ToolRequest`` 中提取幂等和审批上下文；
+- 委托 ``PlanningService`` 执行真实用例。
+"""
 
 from dataclasses import dataclass
 
@@ -31,6 +38,8 @@ _LINEAGE_SCHEMA: dict[str, JsonValue] = {
 
 @dataclass(frozen=True, slots=True)
 class CreatePlanDraftTool:
+    """暴露“创建或修订计划草稿”用例的 Tool。"""
+
     application: PlanningService
 
     manifest = ToolManifest(
@@ -84,6 +93,8 @@ class CreatePlanDraftTool:
 
 @dataclass(frozen=True, slots=True)
 class TransitionPlanTool:
+    """暴露受控计划状态迁移的 Tool。"""
+
     application: PlanningService
 
     manifest = ToolManifest(
@@ -138,6 +149,8 @@ class TransitionPlanTool:
 
 @dataclass(frozen=True, slots=True)
 class RecordPlanningReviewTool:
+    """暴露人工复盘记录的 Tool。"""
+
     application: PlanningService
 
     manifest = ToolManifest(
@@ -208,6 +221,8 @@ class RecordPlanningReviewTool:
 
 
 def _validate(request: ToolRequest, manifest: ToolManifest) -> None:
+    """在进入 application service 前做最小字段级防线。"""
+
     if request.tool_id != manifest.tool_id:
         raise ValueError("tool id 与 handler 不匹配")
     required = manifest.input_schema.get("required")
@@ -218,6 +233,8 @@ def _validate(request: ToolRequest, manifest: ToolManifest) -> None:
 
 
 def _idempotency_key(request: ToolRequest) -> str:
+    """提取并校验写操作所需的幂等键。"""
+
     value = request.idempotency_key
     if value is None or not value.strip():
         raise ValueError("planning 写操作必须提供 idempotency key")
@@ -225,6 +242,8 @@ def _idempotency_key(request: ToolRequest) -> str:
 
 
 def _approval_interaction_id(request: ToolRequest) -> str:
+    """提取并校验受控写操作所需的 HITL interaction id。"""
+
     value = request.approval_interaction_id
     if value is None or not value.strip():
         raise ValueError("受控 planning 写操作必须提供 HITL interaction id")

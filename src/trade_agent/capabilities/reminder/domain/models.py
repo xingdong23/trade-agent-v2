@@ -37,6 +37,23 @@ class DeliveryStatus(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class ReminderRule:
+    """表示一个与交易计划关联的提醒规则版本。
+
+    Attributes:
+        reminder_id: 提醒稳定标识。
+        owner_id: 资源所有者。
+        plan_id: 关联计划标识。
+        version: 规则版本。
+        status: 当前提醒状态。
+        rule_type: 规则类型，例如价格阈值或定时复核。
+        condition: 该规则对应的结构化条件载荷。
+        notification_channel: 通知投递渠道。
+        cooldown: 相邻两次触发之间的冷却时间。
+        approved_by: 当前激活或停用状态对应的批准者；未审批时为空。
+        approved_payload_hash: 当前审批卡的载荷哈希；未审批时为空。
+        metadata: 与规则相关的附加元数据。
+    """
+
     reminder_id: str
     owner_id: str
     plan_id: str
@@ -96,6 +113,16 @@ class ReminderRule:
 
 @dataclass(frozen=True, slots=True)
 class ReminderObservation:
+    """表示提醒评估时读取到的一次观测值。
+
+    Attributes:
+        reminder_id: 对应提醒标识。
+        observed_at: 观测时间。
+        observation_reference: 观测来源引用。
+        value: 当前观测值，可为数值、布尔值或空。
+        fresh: 当前观测是否满足时效要求。
+    """
+
     reminder_id: str
     observed_at: datetime
     observation_reference: str
@@ -113,6 +140,22 @@ class ReminderObservation:
 
 @dataclass(frozen=True, slots=True)
 class ReminderTrigger:
+    """表示一次已生成但尚未必然投递成功的提醒触发。
+
+    Attributes:
+        trigger_id: 触发稳定标识。
+        reminder_id: 触发来源提醒标识。
+        rule_version: 触发时使用的规则版本。
+        observed_at: 触发所基于的观测时间。
+        observation_reference: 触发所基于的观测来源引用。
+        message: 面向用户的提醒文案。
+        indicates_execution: 是否暗示已执行交易；该值必须始终为 ``False``。
+        delivery_status: 当前投递状态。
+        delivery_attempts: 已尝试投递次数。
+        delivery_reference: 外部通知系统回执标识；未投递时为空。
+        delivery_error: 最近一次投递失败原因；未失败时为空。
+    """
+
     trigger_id: str
     reminder_id: str
     rule_version: int

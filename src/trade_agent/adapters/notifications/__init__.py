@@ -13,6 +13,16 @@ from trade_agent.core.llm.contracts import JsonValue
 
 @dataclass(frozen=True, slots=True)
 class NotificationAttempt:
+    """一次通知投递尝试的留痕记录。
+
+    Attributes:
+        recipient_id: 接收方稳定标识。
+        channel: 投递渠道，例如 email 或 sms。
+        template_id: 所使用的模板标识。
+        payload: 模板渲染所需的 JSON 负载。
+        idempotency_key: 幂等投递键，同一次通知重放必须复用。
+    """
+
     recipient_id: str
     channel: str
     template_id: str

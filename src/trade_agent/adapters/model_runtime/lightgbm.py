@@ -19,6 +19,13 @@ class ModelRuntimeUnavailable(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class PlattCalibration:
+    """把原始模型分数转换为校准概率的 Platt 参数。
+
+    Attributes:
+        slope: Logit 线性变换斜率。
+        intercept: Logit 线性变换截距。
+    """
+
     slope: float
     intercept: float
 
@@ -30,6 +37,16 @@ class PlattCalibration:
 
 @dataclass(frozen=True, slots=True)
 class LightGBMArtifact:
+    """训练后可持久化、可复现的 LightGBM 模型包。
+
+    Attributes:
+        artifact_bytes: 包含模型、特征和校准信息的规范字节串。
+        artifact_hash: Artifact SHA-256 完整性摘要。
+        feature_names: 推理时必须保持相同顺序的特征名。
+        feature_attribution: 归一化特征重要性。
+        calibration: 独立校准集拟合的 Platt 参数。
+    """
+
     artifact_bytes: bytes
     artifact_hash: str
     feature_names: tuple[str, ...]
@@ -38,7 +55,13 @@ class LightGBMArtifact:
 
 
 class LightGBMTrainer:
-    """只使用 LightGBM SDK, 不接触任何生成式模型。"""
+    """只使用 LightGBM SDK 训练可复现模型。
+
+    Contract:
+        - 训练与校准数据形状必须匹配同一特征顺序。
+        - 固定随机种子并使用单线程 deterministic 模式。
+        - 本 adapter 不依赖 LLM，也不接受 LLM 生成的评分或排名。
+    """
 
     def train(
         self,

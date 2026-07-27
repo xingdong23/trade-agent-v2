@@ -22,6 +22,21 @@ class FreshnessStatus(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class EvidenceInput:
+    """创建不可变证据快照前的原始输入。
+
+    Attributes:
+        evidence_id: 证据稳定标识。
+        security: 证据对应的规范证券。
+        evidence_type: 证据类型，例如 quote 或 fundamentals。
+        provider: 提供该证据的上游 provider 标识。
+        source_reference: 上游系统中的来源引用。
+        observed_at: 数据实际观测时间；未知时可为空。
+        published_at: 数据发布时间；未知时可为空。
+        retrieved_at: 当前系统拉取该数据的时间。
+        payload: 规范化前的原始 JSON 负载。
+        entitlement: 读取该证据所需的授权范围元数据。
+    """
+
     evidence_id: str
     security: SecurityId
     evidence_type: str
@@ -36,18 +51,41 @@ class EvidenceInput:
 
 @dataclass(frozen=True, slots=True)
 class EvidenceConflict:
+    """表示同类证据之间的冲突集合。
+
+    Attributes:
+        evidence_type: 发生冲突的证据类型。
+        evidence_ids: 参与冲突判定的证据标识集合。
+    """
+
     evidence_type: str
     evidence_ids: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
 class Claim:
+    """表示一条必须绑定证据的事实主张。
+
+    Attributes:
+        text: 主张文本。
+        evidence_ids: 支撑该主张的证据标识集合。
+    """
+
     text: str
     evidence_ids: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
 class EvidenceAssessment:
+    """表示 trust policy 对一批证据的评估结果。
+
+    Attributes:
+        accepted_evidence_ids: 可继续进入下游研究或计划的证据标识集合。
+        rejected_evidence_ids: 因授权、时效或冲突被拒绝的证据标识集合。
+        conflicts: 同类证据之间的结构化冲突信息。
+        gaps: 应向用户暴露的数据缺口或拒绝原因。
+    """
+
     accepted_evidence_ids: tuple[str, ...]
     rejected_evidence_ids: tuple[str, ...]
     conflicts: tuple[EvidenceConflict, ...]

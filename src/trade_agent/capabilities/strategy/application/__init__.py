@@ -1,3 +1,5 @@
+"""Strategy capability 的草稿与发布用例。"""
+
 from trade_agent.capabilities.strategy.contracts import (
     CapabilityCommand,
     CapabilityQuery,

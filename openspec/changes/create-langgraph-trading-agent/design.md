@@ -113,6 +113,19 @@ subgraph -> policy gate -> optional interrupt -> execute command -> render -> en
 
 node 使用结构化输入输出 model 和显式 conditional edge。专用 subgraph 可以调用 model 和白名单 tool，但必须返回类型化 artifact proposal，不得直接修改共享状态。
 
+对话入口必须作为 Agent 中台而不是固定业务机器人实现。自然语言理解通过可替换的
+`IntentClassifier` 输出结构化 `IntentClassification`；具体业务流程通过完整的
+`ConversationJourney` 插件注册。一个 Journey 插件同时拥有稳定 `journey_id`、所需
+实体契约、启动处理器、可恢复的 HITL `subject_type` 和恢复处理器。通用会话运行时
+只负责分类、注册表查找、checkpoint、事件、Card 发布与失败关闭，不得导入具体
+capability service，不得判断“新增一个交易”“买”“研究”等自然语言短语，也不得
+通过 `if/elif` 枚举具体 journey 或 HITL subject。新增业务流程只能通过新增并注册
+Journey 插件完成，无须修改通用运行时。
+
+固定字符串并非一概禁止：版本稳定的协议 ID、Card kind、event type 和 schema 字段名
+是跨模块契约，必须集中定义、注册和校验；面向用户的业务话术、默认业务字段和领域
+对象拼装属于具体 Journey、capability presenter 或可配置文案，不得放进中台内核。
+
 `Quantitative` 明确不是子智能体。它不需要 LLM 自主推理，而是 `capabilities/quantitative` 中由确定性代码、LightGBM/LSTM inference、model registry 和后台 worker 构成的业务能力。Research Agent 通过 `get_prediction`、`get_quantitative_snapshot` 等只读 tool 获取单股量化结果；Strategy Agent 通过 `submit_scan`、`get_scan_status` 和 `list_scan_results` tool 管理批量扫描。量化 training、model publish 和 drift handling 由 application/worker/HITL workflow 执行，不向普通对话 Agent 暴露自由调用入口。
 
 因此首版只有 Research、Strategy 和 Planning 三类业务子智能体，Supervisor 仅负责任务路由与结果汇总。不采用无约束的单一 ReAct loop，也不为确定性计算虚构 Agent 身份，因为这两种方式都会增加授权、重试、来源关系和完成条件的复杂度。

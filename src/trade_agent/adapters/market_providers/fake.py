@@ -30,6 +30,14 @@ class FakeProviderScenario(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class FakeMarketProvider:
+    """可重复重放的美股市场数据 fake provider。
+
+    Attributes:
+        securities: 可解析的证券身份集合。
+        observations: 按证据类型组织的预置观测结果。
+        scenario: 控制 fake 返回正常、限流、超时等场景。
+    """
+
     securities: tuple[SecurityId, ...]
     observations: Mapping[str, tuple[ProviderObservation, ...]] = field(default_factory=dict)
     scenario: FakeProviderScenario = FakeProviderScenario.NORMAL

@@ -24,6 +24,14 @@ class ScanIdempotencyConflictError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class ScanUnitInput:
+    """创建扫描任务时的单证券执行单元输入。
+
+    Attributes:
+        security_id: 证券稳定标识。
+        evaluation_key: 扫描内唯一的评估单元键。
+        payload: 该证券执行单元所需的 JSON 负载。
+    """
+
     security_id: str
     evaluation_key: str
     payload: Mapping[str, JsonValue]
@@ -31,6 +39,18 @@ class ScanUnitInput:
 
 @dataclass(frozen=True, slots=True)
 class ClaimedScanUnit:
+    """worker 从 SQLite 中 claim 到的扫描执行单元。
+
+    Attributes:
+        unit_id: 执行单元稳定标识。
+        scan_id: 所属扫描任务 ID。
+        owner_id: 所属 owner。
+        security_id: 当前执行单元关联的证券 ID。
+        evaluation_key: 当前执行单元在一次扫描中的唯一键。
+        payload: 执行量化/研究步骤所需输入。
+        attempts: 当前执行单元已尝试次数。
+    """
+
     unit_id: str
     scan_id: str
     owner_id: str
@@ -42,6 +62,19 @@ class ClaimedScanUnit:
 
 @dataclass(frozen=True, slots=True)
 class ScanProgress:
+    """扫描任务聚合后的进度快照。
+
+    Attributes:
+        scan_id: 扫描任务 ID。
+        status: 扫描整体状态。
+        total: 总执行单元数。
+        queued: 排队中的执行单元数。
+        running: 正在执行的执行单元数。
+        completed: 已完成的执行单元数。
+        failed: 已失败的执行单元数。
+        cancelled: 已取消的执行单元数。
+    """
+
     scan_id: str
     status: str
     total: int
@@ -54,6 +87,16 @@ class ScanProgress:
 
 @dataclass(frozen=True, slots=True)
 class PersistedScanResult:
+    """单证券扫描结果的持久化读取视图。
+
+    Attributes:
+        scan_id: 所属扫描任务 ID。
+        security_id: 对应证券 ID。
+        status: 当前执行结果状态。
+        result: 成功时保存的 JSON 结果。
+        error: 失败时保存的稳定错误文本。
+    """
+
     scan_id: str
     security_id: str
     status: str

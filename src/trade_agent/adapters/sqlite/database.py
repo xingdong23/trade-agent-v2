@@ -1,4 +1,4 @@
-"""SQLite engine configuration and short transaction boundary."""
+"""SQLite engine 配置、短事务边界和健康检查。"""
 
 import threading
 import time
@@ -14,6 +14,16 @@ from .migrations import LATEST_VERSION, migrate
 
 @dataclass(frozen=True, slots=True)
 class DatabaseHealth:
+    """数据库 readiness 检查的结构化结果。
+
+    Attributes:
+        integrity: SQLite ``quick_check`` 结果。
+        journal_mode: 当前 journal 模式，首版要求 WAL。
+        foreign_keys: 外键约束是否启用。
+        schema_version: 已应用 migration 版本。
+        lock_wait_seconds: 当前进程累计等待写锁时长。
+    """
+
     integrity: str
     journal_mode: str
     foreign_keys: bool
@@ -22,6 +32,14 @@ class DatabaseHealth:
 
 
 class SQLiteDatabase:
+    """首版单机部署共享的 SQLite 连接与事务入口。
+
+    Contract:
+        - 每个连接都启用 WAL、foreign keys 和 busy timeout。
+        - 写事务在当前进程串行化，事务结束后必须释放锁。
+        - 初始化后数据库文件权限收紧为 ``0600``。
+    """
+
     def __init__(self, path: Path, *, busy_timeout_ms: int = 5_000) -> None:
         self.path = path.expanduser().resolve()
         self.busy_timeout_ms = busy_timeout_ms

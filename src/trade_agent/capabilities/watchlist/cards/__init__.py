@@ -1,3 +1,5 @@
+"""Watchlist 状态与人工确认步骤的确定性 Card 投影。"""
+
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence

@@ -1,3 +1,5 @@
+"""Market Research capability 的证券解析与证据组装用例。"""
+
 from trade_agent.capabilities.market_research.contracts import (
     CapabilityCommand,
     CapabilityQuery,

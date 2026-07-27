@@ -1,4 +1,9 @@
-"""HITL 与业务 source 到安全 CardEnvelope 的确定性投影。"""
+"""把领域对象确定性投影为前端 Card 协议。
+
+这个模块的职责不是“渲染 HTML”，而是把后端状态转换成一份稳定、安全、可重放的
+中立协议。前端只能消费 ``CardEnvelope``，而不能直接拿数据库字段自己拼装页面，
+这样才能保证版本、动作和降级策略统一。
+"""
 
 from __future__ import annotations
 
@@ -36,7 +41,16 @@ def stable_card_id(source_type: str, source_id: str) -> str:
 
 @dataclass(slots=True)
 class CardProjectionService:
-    """保存每张 card 的最新投影, 拒绝 source 回退并生成单调 revision。"""
+    """保存每张 Card 的最新投影。
+
+    Attributes:
+        _latest: 以 card_id 为键保存每张卡片最新版本的内存索引。
+
+    Invariants:
+        - 同一个 ``source_type/source_id`` 始终映射到同一个 ``card_id``。
+        - source version 不能回退。
+        - revision 单调递增，用于前端并发保护。
+    """
 
     _latest: dict[str, CardEnvelope] = field(default_factory=dict)
 
@@ -51,11 +65,14 @@ class CardProjectionService:
         expires_at: str | None = None,
         text_fallback: str,
     ) -> CardEnvelope:
+        """根据领域 source 生成一张新的 CardEnvelope。"""
+
         card_id = stable_card_id(source.source_type, source.source_id)
         previous = self._latest.get(card_id)
         if previous is not None and source.version < previous.source.version:
             raise ValueError("不能投影旧于当前 source version 的卡片")
         revision = 1 if previous is None else previous.revision + 1
+        # 只有 pending 卡片才允许带动作，resolved/superseded 等状态必须只读。
         envelope = CardEnvelope(
             protocol_version=CARD_PROTOCOL_VERSION,
             card_id=card_id,
@@ -118,6 +135,12 @@ class CardProjectionService:
 
 @dataclass(slots=True)
 class HitlCardPresenter:
+    """把持久化 HITL 聚合投影为统一交互 Card。
+
+    Attributes:
+        projection: 负责 revision 递增与 card_id 稳定化的投影服务。
+    """
+
     projection: CardProjectionService = field(default_factory=CardProjectionService)
 
     def present(
@@ -127,6 +150,8 @@ class HitlCardPresenter:
         allowed_actions: Sequence[str] | None = None,
         field_errors: Mapping[str, str] | None = None,
     ) -> CardEnvelope:
+        """根据 interaction 类型选择卡片 kind、动作和展示数据。"""
+
         kind = _INTERACTION_KIND[interaction.interaction_type]
         actions = self._allowed_actions(kind, allowed_actions)
         data = self._data(kind, interaction, field_errors or {})
@@ -156,6 +181,8 @@ class HitlCardPresenter:
         interaction: HumanInteraction,
         errors: Mapping[str, str],
     ) -> Mapping[str, JsonValue]:
+        """把不同交互类型归一为前端可渲染的数据结构。"""
+
         payload = interaction.payload
         title = _string(payload.get("title"), "需要你的处理")
         description = _optional_string(payload.get("description"))

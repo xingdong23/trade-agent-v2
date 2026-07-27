@@ -12,6 +12,15 @@ from .manifest import AgentManifest
 
 @dataclass(frozen=True, slots=True)
 class AgentSubgraph:
+    """运行一个业务子智能体所需的编译后容器。
+
+    Attributes:
+        manifest: 子智能体静态声明信息。
+        prompt: 注入到图中的系统提示或角色说明。
+        graph: 已编译的 LangGraph 状态图。
+        tool_gateway: 负责最终工具授权与执行的网关。
+    """
+
     manifest: AgentManifest
     prompt: str
     graph: CompiledStateGraph[AgentState, None, AgentState, AgentState]

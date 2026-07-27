@@ -24,6 +24,17 @@ class TrainingAlgorithm(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class TrainingWindow:
+    """定义一次训练任务覆盖的时间区间。
+
+    Attributes:
+        starts_at: 训练窗口起始时间。
+        ends_at: 训练窗口结束时间。
+
+    Invariants:
+        - 起止时间都必须带时区。
+        - 结束时间必须晚于开始时间。
+    """
+
     starts_at: datetime
     ends_at: datetime
 
@@ -36,7 +47,26 @@ class TrainingWindow:
 
 @dataclass(frozen=True, slots=True)
 class TrainingJob:
-    """足以重放一次训练的不可变输入记录。"""
+    """足以重放一次训练的不可变输入记录。
+
+    Attributes:
+        job_id: 训练任务稳定标识。
+        algorithm: 训练算法类型。
+        hyperparameters: 训练超参数映射, 必须可编码为规范 JSON。
+        random_seed: 控制训练可复现性的随机种子。
+        code_version: 训练代码版本标识。
+        data_snapshot_id: 训练数据快照标识。
+        feature_set_version: 特征集版本。
+        target: 预测目标标识。
+        horizon_trading_days: 预测周期的交易日数量。
+        training_window: 训练覆盖的时间区间。
+        artifact_hash: 已产出模型工件的 SHA-256 摘要; 未落盘时可为空。
+
+    Invariants:
+        - 关键标识字段不能为空白字符串。
+        - `horizon_trading_days` 必须为正。
+        - `artifact_hash` 若存在则必须是 SHA-256 十六进制摘要。
+    """
 
     job_id: str
     algorithm: TrainingAlgorithm
@@ -91,6 +121,19 @@ class TrainingJob:
 
 @dataclass(frozen=True, slots=True)
 class TrainingExample:
+    """表示单个监督训练样本。
+
+    Attributes:
+        sample_id: 样本稳定标识。
+        features: 用于训练的数值特征映射。
+        label: 二分类方向标签, 仅允许 0 或 1。
+
+    Invariants:
+        - `sample_id` 不能为空。
+        - 特征映射不能为空, 且不允许 NaN 或无穷值。
+        - 首版方向预测标签只能是 0 或 1。
+    """
+
     sample_id: str
     features: Mapping[str, float]
     label: int
@@ -108,6 +151,14 @@ class TrainingExample:
 
 @dataclass(frozen=True, slots=True)
 class BenchmarkMetrics:
+    """描述基准模型在二分类任务上的评测指标。
+
+    Attributes:
+        accuracy: 分类准确率。
+        brier_score: Brier 分数, 越低越好。
+        log_loss: 对数损失, 越低越好。
+    """
+
     accuracy: float
     brier_score: float
     log_loss: float
@@ -115,21 +166,68 @@ class BenchmarkMetrics:
 
 @dataclass(frozen=True, slots=True)
 class BenchmarkResult:
+    """汇总一次基准模型评测的概率输出与指标。
+
+    Attributes:
+        algorithm: 参与评测的基准算法类型。
+        probabilities: 与样本顺序一致的正类概率输出。
+        metrics: 根据这些概率计算出的评测指标。
+    """
+
     algorithm: TrainingAlgorithm
     probabilities: tuple[float, ...]
     metrics: BenchmarkMetrics
 
 
 class ProbabilityBenchmark(Protocol):
-    @property
-    def algorithm(self) -> TrainingAlgorithm: ...
+    """供训练评测复用的概率基线协议。
 
-    def predict(self, examples: Sequence[TrainingExample]) -> tuple[float, ...]: ...
+    Contract:
+        - 实现方必须为每个输入样本返回一个顺序一致的正类概率。
+        - 返回概率必须位于 0 到 1 之间, 由实现方保证可用于指标计算。
+        - `algorithm` 必须稳定标识该基线类型, 便于审计和比较。
+
+    Implemented by:
+        `DeterministicRuleBenchmark`、`StatisticalBenchmark` 及测试中的 fake benchmark。
+    """
+
+    @property
+    def algorithm(self) -> TrainingAlgorithm:
+        """返回该基线实现的稳定算法标识。
+
+        Returns:
+            该基线的 `TrainingAlgorithm` 枚举值。
+        """
+
+        ...
+
+    def predict(self, examples: Sequence[TrainingExample]) -> tuple[float, ...]:
+        """为一批训练样本生成正类概率。
+
+        Args:
+            examples: 按既定顺序排列的训练样本序列。
+
+        Returns:
+            与输入顺序一致的正类概率元组。
+
+        Raises:
+            ValueError: 实现方无法基于给定样本生成有效概率时抛出。
+        """
+
+        ...
 
 
 @dataclass(frozen=True, slots=True)
 class DeterministicRuleBenchmark:
-    """以一个显式 feature 阈值作为不学习参数的最低规则基线。"""
+    """以一个显式 feature 阈值作为不学习参数的最低规则基线。
+
+    Attributes:
+        feature_name: 用于决定正负类的特征名称。
+        threshold: 触发正类概率的阈值。
+        positive_probability: 命中阈值时返回的正类概率。
+        negative_probability: 未命中阈值时返回的正类概率。
+        algorithm: 该基线的稳定算法标识。
+    """
 
     feature_name: str
     threshold: float = 0.0
@@ -153,7 +251,12 @@ class DeterministicRuleBenchmark:
 
 @dataclass(frozen=True, slots=True)
 class StatisticalBenchmark:
-    """使用训练标签的拉普拉斯平滑先验, 避免零概率与数据顺序影响。"""
+    """使用训练标签的拉普拉斯平滑先验, 避免零概率与数据顺序影响。
+
+    Attributes:
+        positive_probability: 对任意样本返回的固定正类概率。
+        algorithm: 该基线的稳定算法标识。
+    """
 
     positive_probability: float
     algorithm: TrainingAlgorithm = TrainingAlgorithm.STATISTICAL_BENCHMARK
@@ -207,7 +310,21 @@ def classification_metrics(
 
 @dataclass(frozen=True, slots=True)
 class EvaluationMetrics:
-    """LightGBM 与 LSTM 必须共同提供的样本外评测协议。"""
+    """LightGBM 与 LSTM 必须共同提供的样本外评测协议。
+
+    Attributes:
+        protocol_version: 统一评测协议版本。
+        quality_score: 样本外综合质量分数。
+        calibration_error: 概率校准误差, 越低越好。
+        stability_score: 跨样本期稳定性分数。
+        net_return_after_cost: 扣除交易成本后的收益指标。
+        inference_latency_ms: 推理延迟, 单位为毫秒。
+
+    Invariants:
+        - 指标值不允许 NaN 或无穷值。
+        - `protocol_version` 必须等于当前统一评测协议版本。
+        - 校准误差和推理延迟不能为负。
+    """
 
     protocol_version: str
     quality_score: float
@@ -234,6 +351,20 @@ class EvaluationMetrics:
 
 @dataclass(frozen=True, slots=True)
 class LSTMReleaseThresholds:
+    """定义 LSTM 相对 LightGBM 基线的发布改进门槛。
+
+    Attributes:
+        min_quality_improvement: 质量分数必须超过的最小改善量。
+        min_calibration_improvement: 校准误差必须改善的最小量。
+        min_stability_improvement: 稳定性必须超过的最小改善量。
+        min_net_return_improvement: 成本后收益必须超过的最小改善量。
+        max_latency_ms: 允许的最大推理延迟。
+
+    Invariants:
+        - 各项改善量不能为负。
+        - 最大推理延迟必须为正。
+    """
+
     min_quality_improvement: float
     min_calibration_improvement: float
     min_stability_improvement: float
@@ -257,6 +388,13 @@ class LSTMReleaseThresholds:
 
 @dataclass(frozen=True, slots=True)
 class ReleaseGateDecision:
+    """给出候选 LSTM 是否可提请发布审批的门禁结论。
+
+    Attributes:
+        may_request_release: 是否满足提请发布审批的前置条件。
+        reasons: 未满足门槛时的原因列表。
+    """
+
     may_request_release: bool
     reasons: tuple[str, ...]
 

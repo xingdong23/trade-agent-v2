@@ -1,4 +1,4 @@
-"""Public quantitative capability models."""
+"""量化能力对外公开的模型与契约导出。"""
 
 from trade_agent.capabilities.contracts import CapabilityCommand, CapabilityQuery, CapabilityResult
 from trade_agent.capabilities.quantitative.domain import (

@@ -3,6 +3,8 @@ from pathlib import Path
 from trade_agent.apps.cli import execute
 from trade_agent.apps.container import build_application_container
 from trade_agent.core.config import AppSettings, AuthenticationSettings, DatabaseSettings
+from trade_agent.core.runtime import Intent, IntentClassification
+from trade_agent.core.testing import MappingIntentClassifier
 
 
 def test_cli_uses_shared_container_for_run_and_hitl(tmp_path: Path) -> None:
@@ -10,7 +12,19 @@ def test_cli_uses_shared_container_for_run_and_hitl(tmp_path: Path) -> None:
         database=DatabaseSettings(path=tmp_path / "cli.db"),
         authentication=AuthenticationSettings(development_user_id="owner-a"),
     )
-    container = build_application_container(settings)
+    container = build_application_container(
+        settings,
+        intent_classifier=MappingIntentClassifier(
+            {
+                "我要买 NVDA": IntentClassification(
+                    Intent.PLANNING,
+                    "planning.create_plan",
+                    1.0,
+                    (("symbol", "NVDA"),),
+                )
+            }
+        ),
+    )
     run = execute(
         ("run", "--thread", "thread-1", "我要买 NVDA"),
         container=container,

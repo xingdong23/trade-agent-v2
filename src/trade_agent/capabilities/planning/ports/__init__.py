@@ -1,3 +1,5 @@
+"""Planning capability 所需的版本化 repository port。"""
+
 from typing import Protocol
 
 from trade_agent.capabilities.contracts import CapabilityRepository

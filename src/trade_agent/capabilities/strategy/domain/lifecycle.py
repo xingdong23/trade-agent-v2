@@ -12,6 +12,26 @@ from trade_agent.core.llm.contracts import JsonValue
 
 @dataclass(frozen=True, slots=True)
 class StrategyDraft:
+    """表示尚未发布的策略草稿。
+
+    Attributes:
+        strategy_id: 草稿归属的策略标识。
+        owner_id: 草稿所属用户。
+        name: 策略名称。
+        logic: 自然语言或结构化策略逻辑摘要。
+        target: 目标变量定义。
+        horizon: 适用周期定义。
+        entry_conditions: 入场条件集合。
+        exclusion_conditions: 排除条件集合。
+        required_inputs: 运行该策略所需输入名称集合。
+        ranking_policy: 候选排序策略。
+        positive_examples: 用户提供的正例集合。
+        negative_examples: 用户提供的反例集合。
+
+    Invariants:
+        - 条件集合与排序策略在创建后会被冻结为只读映射。
+    """
+
     strategy_id: str
     owner_id: str
     name: str
@@ -66,6 +86,17 @@ class StrategyDraft:
 
 @dataclass(frozen=True, slots=True)
 class PublishedStrategy:
+    """表示一个已经通过审批并发布的策略版本。
+
+    Attributes:
+        strategy_id: 策略稳定标识。
+        owner_id: 策略所属用户。
+        version: 已发布版本号。
+        draft: 产生该版本的草稿快照。
+        approved_by: 执行发布审批的用户标识。
+        source_draft_hash: 发布时绑定的草稿内容哈希。
+    """
+
     strategy_id: str
     owner_id: str
     version: int

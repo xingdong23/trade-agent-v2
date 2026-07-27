@@ -14,6 +14,13 @@
 ### Requirement: 类型化意图路由与工具契约
 系统 MUST 通过具有输入输出校验 schema 的显式 graph node 和 tool 路由受支持的请求。对于不支持或存在歧义的请求，系统 MUST 发起澄清，不得虚构动作。
 
+系统 MUST 作为可扩展 Agent 中台运行：自然语言分类器只输出结构化 intent、稳定
+journey ID 和实体；完整业务旅程必须通过可替换插件注册。通用会话运行时不得匹配
+业务关键词、枚举具体业务 journey/HITL subject、构造业务默认值，或直接依赖具体
+capability service。新增旅程 MUST 能在不修改通用运行时的情况下完成启动与 HITL
+恢复接入。稳定的 journey ID、Card kind、event type 和 schema 字段属于版本化协议，
+不视为自然语言硬编码，但必须由 registry 或 catalog 统一管理。
+
 #### Scenario: 路由受支持的研究请求
 - **WHEN** 用户请求分析一个可识别的证券
 - **THEN** graph 使用规范化且通过 schema 校验的输入，将请求路由到市场研究 workflow
@@ -21,6 +28,14 @@
 #### Scenario: 澄清有歧义的证券代码
 - **WHEN** 证券解析返回多个合理候选项
 - **THEN** graph 在获取或呈现特定证券结论前中断，并要求用户选择
+
+#### Scenario: 注册新的业务旅程
+- **WHEN** 部署方提供一个新的 Journey 插件及其结构化意图分类结果
+- **THEN** composition root 通过统一注册接口装配该插件，通用会话运行时能够启动并恢复它，且无需新增针对该业务的条件分支
+
+#### Scenario: 未配置分类器或旅程
+- **WHEN** 用户消息无法可靠分类，或分类结果指向未注册的 journey ID
+- **THEN** 系统 fail closed 并返回通用澄清或不支持 Card，不得通过关键词、相似字符串或默认业务动作猜测用户意图
 
 ### Requirement: 流式进度与结构化结果
 系统 MUST 按顺序流式输出 graph 进度、assistant 文本、tool 状态、HITL 请求、结构化 artifact、完成和失败事件。客户端重连后必须能从先前已接收的 event cursor 继续。

@@ -12,6 +12,7 @@ from trade_agent.core.tools import (
     DefaultToolGateway,
     ManifestToolPolicy,
     ToolErrorCode,
+    ToolExecutionError,
     ToolManifest,
     ToolRegistry,
     ToolRequest,
@@ -42,6 +43,26 @@ class EchoTool:
 
     async def handle(self, request: ToolRequest) -> ToolResult:
         return ToolResult("ok", {"value": request.arguments["value"]})
+
+
+@dataclass(frozen=True, slots=True)
+class FailingTool:
+    manifest = ToolManifest(
+        "test.failure",
+        "测试结构化错误",
+        True,
+        False,
+        {"type": "object", "additionalProperties": False},
+        {"type": "object", "additionalProperties": False},
+    )
+
+    async def handle(self, request: ToolRequest) -> ToolResult:
+        del request
+        raise ToolExecutionError(
+            ToolErrorCode.UNAVAILABLE,
+            "任意展示文案，不包含供程序识别的关键词",
+            retryable=True,
+        )
 
 
 def _gateway(*allowed_tools: str) -> DefaultToolGateway:
@@ -83,6 +104,20 @@ def test_gateway_validates_input_and_unknown_tool() -> None:
 def test_registry_rejects_duplicate_tool_id() -> None:
     with pytest.raises(ValueError, match="重复注册"):
         ToolRegistry((EchoTool(), EchoTool()))
+
+
+def test_gateway_uses_typed_error_instead_of_parsing_message() -> None:
+    gateway = DefaultToolGateway(
+        ToolRegistry((FailingTool(),)),
+        ManifestToolPolicy({"research": frozenset({"test.failure"})}),
+    )
+
+    result = asyncio.run(gateway.invoke(ToolRequest("test.failure", {}, agent_id="research")))
+
+    assert result.error is not None
+    assert result.error.code is ToolErrorCode.UNAVAILABLE
+    assert result.error.retryable is True
+    assert result.error.message == "任意展示文案，不包含供程序识别的关键词"
 
 
 def test_checkpoint_state_rejects_large_or_domain_payload() -> None:

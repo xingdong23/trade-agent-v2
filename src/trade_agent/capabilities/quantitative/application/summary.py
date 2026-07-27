@@ -9,6 +9,15 @@ from trade_agent.core.llm.contracts import JsonValue
 
 @dataclass(frozen=True, slots=True)
 class PersistedScanResultView:
+    """表示已持久化扫描结果的只读投影视图。
+
+    Attributes:
+        scan_id: 所属扫描标识。
+        result_id: 结果稳定标识。
+        result_version: 持久化结果版本号。
+        payload: 供后续摘要或展示使用的原始结构化载荷。
+    """
+
     scan_id: str
     result_id: str
     result_version: int

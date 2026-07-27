@@ -30,6 +30,22 @@ from trade_agent.core.llm import (
 
 @dataclass(frozen=True, slots=True)
 class LiteLLMRouteConfig:
+    """LiteLLM 逻辑路由在运行时展开后的最终配置。
+
+    Attributes:
+        logical_route: 上层业务使用的稳定逻辑路由名。
+        model: 首选物理模型标识。
+        timeout_seconds: 单次调用超时，单位秒。
+        max_tokens: 输出 token 上限。
+        provider: 从主模型推导出的 provider 名称。
+        allowed_providers: 本路由批准使用的 provider 集合。
+        concurrency_limit: 并发调用上限。
+        max_attempts: 单模型的最大重试次数。
+        budget_usd: 可选成本预算上限。
+        fallback_models: 当前路由允许尝试的后备物理模型列表。
+        metadata: 注入 LiteLLM 调用的固定元数据。
+    """
+
     logical_route: str
     model: str
     timeout_seconds: float
@@ -50,7 +66,27 @@ class LiteLLMRouteConfig:
 
 
 class LiteLLMCompletion(Protocol):
-    def __call__(self, **kwargs: Any) -> Awaitable[Any]: ...
+    """LiteLLM 异步 completion 函数的最小可替换协议。
+
+    Contract:
+        - 实现方必须接受与 ``litellm.acompletion`` 兼容的关键字参数。
+        - 返回值必须能被本 adapter 解析为普通响应或 stream 响应。
+
+    Implemented by:
+        litellm.acompletion
+        tests 中注入的异步 fake completion
+    """
+
+    def __call__(self, **kwargs: Any) -> Awaitable[Any]:
+        """执行一次异步 completion 调用。
+
+        Args:
+            **kwargs: 与 LiteLLM completion API 对齐的参数集合。
+
+        Returns:
+            一个 awaitable；完成后返回普通响应对象或可异步迭代的 stream 对象。
+        """
+        ...
 
 
 class LiteLLMClient:

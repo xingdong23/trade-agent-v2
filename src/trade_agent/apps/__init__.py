@@ -1,1 +1,1 @@
-"""Application entry points and composition roots."""
+"""进程入口与组合根所在包。"""

@@ -1,4 +1,4 @@
-"""Quantitative domain models."""
+"""量化能力的领域模型与核心规则导出。"""
 
 from .data_contracts import (
     AdjustmentPolicy,

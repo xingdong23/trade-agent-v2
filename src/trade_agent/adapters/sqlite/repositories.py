@@ -43,6 +43,15 @@ class JobLeaseError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class CommandReceipt:
+    """SQLite 幂等命令记录返回给执行层的快照。
+
+    Attributes:
+        command_id: 命令稳定标识。
+        status: 当前命令状态，例如 pending 或 completed。
+        result: 已持久化结果；未完成时可为空。
+        reused: 本次是否命中了既有幂等记录。
+    """
+
     command_id: str
     status: str
     result: Mapping[str, JsonValue] | None
@@ -51,6 +60,16 @@ class CommandReceipt:
 
 @dataclass(frozen=True, slots=True)
 class ClaimedJob:
+    """从 SQLite 作业队列中成功 claim 到的任务。
+
+    Attributes:
+        job_id: 作业稳定标识。
+        owner_id: 作业所属 owner。
+        job_type: 作业类型。
+        payload: 作业执行所需的 JSON 负载。
+        attempts: 当前作业已尝试次数。
+    """
+
     job_id: str
     owner_id: str
     job_type: str

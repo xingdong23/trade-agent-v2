@@ -1,1 +1,1 @@
-"""Provider-neutral orchestration contracts."""
+"""与具体 provider 无关的核心运行契约。"""

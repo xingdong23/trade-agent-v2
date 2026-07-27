@@ -13,6 +13,16 @@ from trade_agent.core.security import Redactor
 
 @dataclass(frozen=True, slots=True)
 class TraceEvent:
+    """一次结构化 trace 事件的标准记录。
+
+    Attributes:
+        correlation_id: 贯穿一次请求或运行链路的追踪 ID。
+        event_type: 事件种类，例如 tool.invoke 或 hitl.pause。
+        outcome: 结果标签，例如 success 或 error。
+        occurred_at: 事件发生时间，UTC 时间戳。
+        attributes: 经过脱敏后的附加属性。
+    """
+
     correlation_id: str
     event_type: str
     outcome: str
@@ -21,7 +31,24 @@ class TraceEvent:
 
 
 class TraceExporter(Protocol):
-    def export(self, event: TraceEvent) -> None: ...
+    """向外部系统导出 trace 事件的协议。
+
+    Contract:
+        - 实现方不得修改传入的 TraceEvent。
+        - 导出失败策略必须由实现方显式决定，不能静默破坏本地 trace 记录。
+
+    Implemented by:
+        未来的 OTLP / 文件 exporter adapter
+        测试中的 exporter fake
+    """
+
+    def export(self, event: TraceEvent) -> None:
+        """导出一个已经脱敏的 trace 事件。
+
+        Args:
+            event: 需要发送到外部后端的稳定 trace 记录。
+        """
+        ...
 
 
 class StructuredTracer:

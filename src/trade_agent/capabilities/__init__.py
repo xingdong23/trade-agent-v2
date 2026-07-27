@@ -1,1 +1,1 @@
-"""Deterministic business capabilities."""
+"""系统的确定性业务能力集合。"""

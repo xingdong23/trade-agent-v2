@@ -33,7 +33,21 @@ class ReviewOutcome(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class PlanLineage:
-    """计划或复盘所引用的精确、不可变来源版本。"""
+    """计划或复盘所引用的精确、不可变来源版本。
+
+    Attributes:
+        source_type: research artifact、scan result 或用户请求。
+        source_id: 来源对象稳定标识。
+        source_version: 来源精确版本。
+        evidence_ids: 支撑来源结论的证据快照标识。
+        strategy_id: 可选策略标识。
+        strategy_version: 与 strategy_id 成对出现的策略版本。
+        model_version_id: 产生扫描结果的已批准量化模型版本。
+
+    Invariants:
+        - 来源 ID 非空且版本从 1 开始。
+        - Strategy ID 与 version 必须同时提供。
+    """
 
     source_type: str
     source_id: str
@@ -60,6 +74,17 @@ class PlanLineage:
 
 @dataclass(frozen=True, slots=True)
 class PlanTransition:
+    """交易计划的一次不可变状态迁移记录。
+
+    Attributes:
+        from_status: 迁移前状态。
+        to_status: 迁移后状态。
+        actor_id: 发起迁移的用户或系统角色。
+        occurred_at: 带时区的迁移时间。
+        reason: 可审计原因。
+        approval_interaction_id: 激活等受控迁移对应的 HITL 标识。
+    """
+
     from_status: PlanStatus
     to_status: PlanStatus
     actor_id: str
@@ -86,6 +111,34 @@ _RISK_CRITICAL_FIELDS = (
 
 @dataclass(frozen=True, slots=True)
 class TradingPlan:
+    """仅用于研究决策、绝不代表真实订单的版本化交易计划。
+
+    Attributes:
+        plan_id: 计划稳定标识。
+        owner_id: 资源所有者。
+        security_id: 规范化美股证券标识。
+        version: 计划版本，从 1 开始。
+        status: 当前领域生命周期状态。
+        direction: 计划方向或研究逻辑。
+        horizon: 计划有效周期。
+        entry_condition: 人工判断的入场条件。
+        invalidation_condition: 失效或风险退出条件。
+        target: 目标或复核条件。
+        position_notes: 仓位与风险预算说明。
+        risk_notes: 风险和不确定性说明。
+        source_references: 精确 research/scan/user lineage。
+        created_at: 当前版本创建时间。
+        field_sources: 每个字段的来源说明。
+        transitions: 历史状态迁移记录。
+        supersedes_version: 当前草稿替代的旧版本。
+
+    Invariants:
+        - 只允许规范化美股证券，且至少关联一个来源。
+        - 激活前所有风险关键字段必须完整并通过 HITL。
+        - 新版本追加创建，不能原地覆盖历史版本。
+        - 本模型没有 broker、order、fill 或 account 字段。
+    """
+
     plan_id: str
     owner_id: str
     security_id: str
@@ -202,6 +255,24 @@ class TradingPlan:
 
 @dataclass(frozen=True, slots=True)
 class Review:
+    """对计划或扫描结果的版本化人工复盘。
+
+    Attributes:
+        review_id: 复盘稳定标识。
+        owner_id: 资源所有者。
+        subject_type: plan 或 scan_result。
+        subject_id: 被复盘对象标识。
+        subject_version: 被复盘对象精确版本。
+        outcome: 有用、误报、漏报等复盘结论。
+        created_at: 带时区的复盘时间。
+        lineage: 复盘引用的不可变来源。
+        annotations: 结构化人工备注。
+        feedback_destinations: 只允许流向未来策略草稿或未来训练数据。
+
+    Invariants:
+        - 复盘不会回写历史计划或扫描结果。
+    """
+
     review_id: str
     owner_id: str
     subject_type: str

@@ -16,6 +16,18 @@ class ModelStatus(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class EvaluationMetrics:
+    """描述候选或基线模型在统一评测协议下的关键指标。
+
+    Attributes:
+        quality: 综合质量分数, 用于跨模型比较样本外表现。
+        calibration_error: 概率校准误差, 越低越好。
+        stability: 跨样本期或截面的稳定性分数。
+        turnover: 策略换手相关指标。
+        cost_adjusted_return: 扣除交易成本后的收益表现。
+        latency_ms: 单次推理延迟, 单位为毫秒。
+        coverage: 可生成有效预测的样本覆盖率。
+    """
+
     quality: float
     calibration_error: float
     stability: float
@@ -27,6 +39,17 @@ class EvaluationMetrics:
 
 @dataclass(frozen=True, slots=True)
 class EvaluationThresholds:
+    """定义候选模型晋级评测时必须满足的最小/最大门槛。
+
+    Attributes:
+        min_quality: 允许通过的最小质量分数。
+        max_calibration_error: 允许的最大概率校准误差。
+        min_stability: 允许通过的最小稳定性分数。
+        min_cost_adjusted_return: 允许通过的最小成本后收益。
+        max_latency_ms: 允许的最大推理延迟, 单位为毫秒。
+        min_coverage: 允许通过的最小预测覆盖率。
+    """
+
     min_quality: float
     max_calibration_error: float
     min_stability: float
@@ -37,6 +60,16 @@ class EvaluationThresholds:
 
 @dataclass(frozen=True, slots=True)
 class EvaluationResult:
+    """汇总单个候选模型的评测输入、结论与失败原因。
+
+    Attributes:
+        model_version_id: 被评测模型版本标识。
+        metrics: 候选模型自身指标。
+        benchmark_metrics: 对照基线模型指标。
+        passed: 是否通过全部发布门禁。
+        failures: 未通过的门禁原因列表。
+    """
+
     model_version_id: str
     metrics: EvaluationMetrics
     benchmark_metrics: EvaluationMetrics
@@ -75,12 +108,27 @@ def evaluate_candidate(
 
 @dataclass(frozen=True, slots=True)
 class TimeWindow:
+    """表示一个闭区间语义之外的时间窗口边界。
+
+    Attributes:
+        start: 窗口开始时间。
+        end: 窗口结束时间。
+    """
+
     start: datetime
     end: datetime
 
 
 @dataclass(frozen=True, slots=True)
 class WalkForwardFold:
+    """描述一次 walk-forward 切分中的训练、验证与测试窗口。
+
+    Attributes:
+        train: 训练窗口。
+        validation: 验证窗口。
+        test: 测试窗口。
+    """
+
     train: TimeWindow
     validation: TimeWindow
     test: TimeWindow
@@ -115,6 +163,18 @@ def build_walk_forward_folds(
 
 @dataclass(frozen=True, slots=True)
 class ModelRegistryEntry:
+    """注册表中一个量化模型版本的不可变记录。
+
+    Attributes:
+        model_version_id: 模型版本稳定标识。
+        market: 适用市场, 首版应为美股。
+        target: 预测目标。
+        horizon: 预测周期标识。
+        status: 当前生命周期状态。
+        evaluation: 最近一次门禁评测结果。
+        approved_by: 批准人标识; 候选模型可为空。
+    """
+
     model_version_id: str
     market: str
     target: str
@@ -172,6 +232,22 @@ class PredictionStatus(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class QuantitativePrediction:
+    """表示批量推理后返回给调用方的标准化预测结果。
+
+    Attributes:
+        status: 预测是否可用。
+        security_id: 证券稳定标识。
+        target: 预测目标。
+        horizon: 预测周期。
+        as_of: 信息截止时点。
+        model_version_id: 实际使用的模型版本; 不可用时为空。
+        feature_snapshot_id: 推理输入特征快照标识; 不可用时仍保留请求值。
+        distribution: 预测输出分布或关键概率。
+        calibration: 与校准相关的说明指标。
+        applicability: 适用性、市场等上下文说明。
+        reason: 预测不可用时的原因说明。
+    """
+
     status: PredictionStatus
     security_id: str
     target: str
@@ -187,6 +263,20 @@ class QuantitativePrediction:
 
 @dataclass(frozen=True, slots=True)
 class InferenceRequest:
+    """封装单只证券进入批量推理前的冻结输入。
+
+    Attributes:
+        security_id: 证券稳定标识。
+        market: 证券所属市场。
+        target: 预测目标。
+        horizon: 预测周期。
+        as_of: 输入信息截止时点。
+        feature_snapshot_id: 特征快照标识。
+        features: 推理所需特征值映射。
+        missing_ratio: 缺失特征占比, 范围为 0 到 1。
+        out_of_distribution: 输入是否已被判断为超出模型适用范围。
+    """
+
     security_id: str
     market: str
     target: str
@@ -199,9 +289,33 @@ class InferenceRequest:
 
 
 class ModelRuntime:
+    """供批量推理服务调用具体模型 runtime 的执行协议。
+
+    Contract:
+        - 实现方必须按输入顺序返回每一行的预测映射。
+        - 输出键名必须与上层 ranking 或展示逻辑约定一致。
+        - 不得在 runtime 内部自行选择模型版本, 调用方负责传入已批准版本。
+
+    Implemented by:
+        生产模型 runtime adapter 与测试 fake runtime。
+    """
+
     def predict_batch(
         self, model_version_id: str, rows: Sequence[Mapping[str, float]]
     ) -> Sequence[Mapping[str, float]]:
+        """对一批已数值化特征执行模型推理。
+
+        Args:
+            model_version_id: 需要执行的已批准模型版本标识。
+            rows: 逐行排列的数值特征映射。
+
+        Returns:
+            与输入顺序一致的预测输出映射序列。
+
+        Raises:
+            NotImplementedError: 基类未提供具体 runtime 实现。
+        """
+
         raise NotImplementedError
 
 

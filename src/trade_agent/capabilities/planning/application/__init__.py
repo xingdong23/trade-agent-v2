@@ -1,4 +1,8 @@
-"""交易计划草稿、状态迁移与复盘 application service。"""
+"""Planning capability 的应用层用例编排。
+
+这层不直接决定“什么是好计划”，那是 domain 的工作；它负责把一次命令变成确定性
+状态迁移，并处理幂等、版本保护、审批凭证和跨对象引用。
+"""
 
 from __future__ import annotations
 
@@ -29,6 +33,27 @@ class PlanningConflictError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class PlanDraftRequest:
+    """创建或修订计划草稿时的标准输入。
+
+    这个对象把来自表单、Research journey 或 Tool 调用的输入统一成一种形状，
+    避免 application service 直接依赖某个入口层的参数命名。
+
+    Attributes:
+        plan_id: 计划稳定标识。
+        owner_id: 计划所属用户。
+        security_id: 已解析的规范证券标识。
+        direction: 方向或交易逻辑摘要。
+        created_at: 本次草稿创建或修订时间。
+        source_references: 研究、扫描或用户输入的来源关系集合。
+        horizon: 计划周期；未补齐时可为空。
+        entry_condition: 入场条件；未补齐时可为空。
+        invalidation_condition: 失效或止损条件；未补齐时可为空。
+        target: 目标条件；未补齐时可为空。
+        position_notes: 仓位备注；未补齐时可为空。
+        risk_notes: 风险说明；未补齐时可为空。
+        field_sources: 每个字段当前值的来源说明。
+    """
+
     plan_id: str
     owner_id: str
     security_id: str
@@ -46,6 +71,13 @@ class PlanDraftRequest:
 
 @dataclass(frozen=True, slots=True)
 class ReviewResult:
+    """封装一次复盘命令的返回结果。
+
+    Attributes:
+        review: 已持久化的复盘记录。
+        reviewed_plan: 若复盘对象是计划，则返回被推进到 reviewed 的计划版本；否则为空。
+    """
+
     review: Review
     reviewed_plan: TradingPlan | None = None
 
@@ -61,7 +93,14 @@ class PlanningApplication:
 
 
 class PlanningService:
-    """进程内确定性实现; 持久化 adapter 可复用同一状态机契约。"""
+    """Planning capability 的进程内确定性实现。
+
+    教学上可以把它看成“无数据库版的 application service”：
+
+    - ``_plans`` / ``_reviews`` 存状态；
+    - ``_draft_commands`` / ``_transition_commands`` / ``_review_commands`` 存幂等收据；
+    - ``Lock`` 让单进程示例也具备最小并发保护语义。
+    """
 
     def __init__(self) -> None:
         self._plans: dict[tuple[str, str], list[TradingPlan]] = {}
@@ -72,6 +111,8 @@ class PlanningService:
         self._lock = Lock()
 
     def create_draft(self, request: PlanDraftRequest, *, idempotency_key: str) -> TradingPlan:
+        """创建第一个草稿版本。"""
+
         _require_idempotency_key(idempotency_key)
         fingerprint = _draft_fingerprint(request, expected_version=None)
         command_key = (request.owner_id, idempotency_key)
@@ -82,6 +123,7 @@ class PlanningService:
             plan_key = (request.owner_id, request.plan_id)
             if plan_key in self._plans:
                 raise PlanningConflictError("计划已存在, 编辑必须创建新的草稿版本")
+            # version=1 的草稿是后续审批、修订和 artifact 投影的唯一起点。
             plan = TradingPlan(
                 plan_id=request.plan_id,
                 owner_id=request.owner_id,
@@ -110,6 +152,8 @@ class PlanningService:
         expected_version: int,
         idempotency_key: str,
     ) -> TradingPlan:
+        """基于当前 draft 生成一个新的草稿版本。"""
+
         _require_idempotency_key(idempotency_key)
         fingerprint = _draft_fingerprint(request, expected_version=expected_version)
         command_key = (request.owner_id, idempotency_key)
@@ -124,6 +168,7 @@ class PlanningService:
                 raise ValueError("只有 draft 计划可以直接编辑")
             if request.security_id != current.security_id:
                 raise ValueError("编辑计划不得替换已解析证券")
+            # 修订不会原地修改旧版本，而是追加新版本，便于审批和审计追踪。
             revised = current.revised(
                 direction=request.direction,
                 horizon=request.horizon,
@@ -153,6 +198,8 @@ class PlanningService:
         idempotency_key: str,
         occurred_at: datetime,
     ) -> TradingPlan:
+        """在明确批准后把 draft 激活为 active。"""
+
         if not approved:
             raise PermissionError("激活计划必须经过 owner 明确批准")
         if actor_id != owner_id:
@@ -180,6 +227,8 @@ class PlanningService:
                 raise PlanningConflictError("计划版本已变化, 不能批准旧草稿")
             if approved_payload_hash != current.approval_payload_hash:
                 raise PlanningConflictError("审批 payload hash 与当前草稿不一致")
+            # approval_payload_hash 把“用户批准的内容”与当前草稿绑定在一起，
+            # 防止前端提交过期审批卡片却仍激活最新版本。
             activated = transition_plan(
                 current,
                 target_status=PlanStatus.ACTIVE,
@@ -205,6 +254,8 @@ class PlanningService:
         idempotency_key: str,
         occurred_at: datetime,
     ) -> TradingPlan:
+        """执行除 active 之外的受控状态迁移。"""
+
         if target_status is PlanStatus.ACTIVE:
             raise ValueError("active 迁移必须使用带审批 payload hash 的 activate")
         if actor_id != owner_id:
@@ -260,6 +311,8 @@ class PlanningService:
         idempotency_key: str,
         created_at: datetime,
     ) -> ReviewResult:
+        """记录计划或扫描结果的人工复盘。"""
+
         if actor_id != owner_id:
             raise PermissionError("只有 owner 可以提交复盘")
         if not approval_interaction_id.strip():
@@ -291,6 +344,7 @@ class PlanningService:
             reviewed_plan: TradingPlan | None = None
             resolved_lineage = lineage
             if subject_type == "plan":
+                # 计划复盘会顺带把对应计划推进到 reviewed，形成后续学习样本。
                 current = self._current_unlocked(owner_id, subject_id)
                 if current.version != subject_version:
                     raise PlanningConflictError("复盘必须引用当前计划的精确版本")
@@ -427,6 +481,8 @@ class PlanningService:
 
 
 def plan_payload(plan: TradingPlan) -> Mapping[str, JsonValue]:
+    """把领域计划转换为稳定的跨层 JSON 载荷。"""
+
     return {
         "plan_id": plan.plan_id,
         "owner_id": plan.owner_id,
@@ -448,6 +504,8 @@ def plan_payload(plan: TradingPlan) -> Mapping[str, JsonValue]:
 
 
 def review_payload(result: ReviewResult) -> Mapping[str, JsonValue]:
+    """把复盘结果转换为 API/Tool 可返回的 JSON 结构。"""
+
     review = result.review
     return {
         "review_id": review.review_id,

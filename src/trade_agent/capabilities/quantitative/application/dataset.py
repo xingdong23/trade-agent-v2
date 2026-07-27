@@ -11,6 +11,21 @@ from trade_agent.capabilities.quantitative.contracts import DataAvailability
 
 @dataclass(frozen=True, slots=True)
 class DatasetRecord:
+    """表示一个决策时点可用于训练的数据样本。
+
+    Attributes:
+        record_id: 样本稳定标识。
+        security_id: 证券稳定标识。
+        decision_time: 该样本可被策略或模型使用的决策时间。
+        values: 输入字段到数值的映射。
+        availability: 每个输入字段对应的数据可用时间元数据。
+        adjustment_version: 该样本采用的复权版本。
+
+    Invariants:
+        - `decision_time` 必须带时区。
+        - `values` 与 `availability` 必须逐字段一一对应。
+    """
+
     record_id: str
     security_id: str
     decision_time: datetime
@@ -27,6 +42,19 @@ class DatasetRecord:
 
 @dataclass(frozen=True, slots=True)
 class DatasetSnapshot:
+    """冻结一次时间点一致数据集构建结果。
+
+    Attributes:
+        snapshot_id: 数据集快照标识。
+        market: 数据集适用市场, 首版固定为美股。
+        target_definition: 目标定义版本或标识。
+        feature_set_version: 该数据集对应的特征集版本。
+        calendar_version: 交易日日历版本。
+        adjustment_version: 复权版本。
+        records: 被纳入快照的全部样本记录。
+        frozen_at: 快照冻结时间。
+    """
+
     snapshot_id: str
     market: str
     target_definition: str
@@ -48,6 +76,15 @@ class QualityViolationCode(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class QualityViolation:
+    """描述一条阻止数据集通过门禁的质量违规。
+
+    Attributes:
+        code: 违规类型代码。
+        record_id: 触发违规的样本标识。
+        field: 相关字段名称; 若为样本级问题则可为空。
+        message: 面向调用方的违规解释。
+    """
+
     code: QualityViolationCode
     record_id: str
     field: str | None

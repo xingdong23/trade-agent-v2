@@ -1,11 +1,20 @@
-"""真实会话入口: 把 planning 对话推进为持久化 HITL、Card 与事件。"""
+"""把一次自然语言会话推进为可恢复的业务流程。
+
+这是当前系统最值得先读的“主线”模块。它只承担应用层编排：用户消息进入后，
+运行时识别当前支持的旅程，调用已注册的 journey 插件，并把结果投影为 Card；
+遇到需要人类选择、填写或批准的节点时，journey 先创建 HITL 交互并暂停。前端
+提交响应后，:meth:`ConversationRunService.handle_resolved_interaction` 依据
+``subject_type`` 找到对应 journey，从暂停点继续推进。
+
+注意：当前第一版采用显式状态机保障流程确定性，LangGraph 负责 Agent 路由骨架。
+后续可以逐步把路由交给 Supervisor，但 HITL、安全门禁和持久化边界不应交给 LLM。
+"""
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
-from datetime import UTC, datetime, timedelta
+from dataclasses import replace
+from datetime import UTC, datetime
 from typing import Protocol
 from uuid import uuid4
 
@@ -16,86 +25,101 @@ from trade_agent.adapters.sqlite import (
     SQLiteEventStore,
     SQLiteThreadCheckpointer,
 )
-from trade_agent.capabilities.planning.application import PlanDraftRequest, PlanningService
-from trade_agent.capabilities.planning.cards import PlanningCardPresenter
-from trade_agent.capabilities.planning.contracts import PlanLineage, ReviewOutcome, TradingPlan
+from trade_agent.apps.journeys.contracts import (
+    ConversationJourney,
+    ConversationRunResult,
+    ConversationRuntimePort,
+    JourneyStartContext,
+)
 from trade_agent.core.events import RunEvent
-from trade_agent.core.hitl import (
-    DefaultHitlService,
-    HumanInteraction,
-    InteractionStatus,
-    InteractionType,
-)
+from trade_agent.core.hitl import DefaultHitlService, HumanInteraction, InteractionStatus
 from trade_agent.core.llm.contracts import JsonValue
-from trade_agent.core.presentation import CardEnvelope
-from trade_agent.core.presentation.projection import HitlCardPresenter
-from trade_agent.core.runtime import AgentState, Intent
-
-_SYMBOL_PATTERN = re.compile(r"\b([A-Za-z]{1,5})\b")
-_PLAN_FIELDS = (
-    "horizon",
-    "entry_condition",
-    "invalidation_condition",
-    "target",
-    "position_notes",
-    "risk_notes",
-)
+from trade_agent.core.presentation import CARD_PROTOCOL_VERSION, CardEnvelope, CardSource
+from trade_agent.core.presentation.projection import HitlCardPresenter, stable_card_id
+from trade_agent.core.runtime import AgentState, IntentClassification, IntentClassifier
 
 
 class GraphInvoker(Protocol):
+    """会话运行时所需的最小 LangGraph 调用协议。
+
+    Contract:
+        - 实现方只接收可写入 checkpoint 的 ``AgentState``。
+        - 返回值不得作为领域事实来源；领域事实必须来自 capability repository。
+
+    Implemented by:
+        LangGraph 的 ``CompiledStateGraph`` 和测试图替身。
+    """
+
     def invoke(self, input: AgentState) -> Mapping[str, object]: ...
 
 
-@dataclass(frozen=True, slots=True)
-class SecurityCandidate:
-    security_id: str
-    label: str
+class JourneyRegistry:
+    """保存中台当前装配的启动旅程与恢复路由。
+
+    Contract:
+        - ``journey_id`` 与 ``subject_type`` 在一个进程内都必须唯一。
+        - Registry 只做查找，不解释自然语言、创建业务对象或吞掉 journey 异常。
+        - 只接受同时声明启动和恢复协议的完整 ``ConversationJourney`` 插件。
+    """
+
+    def __init__(self) -> None:
+        self._journeys_by_id: dict[str, ConversationJourney] = {}
+        self._journeys_by_subject_type: dict[str, ConversationJourney] = {}
+
+    def register_conversation_journey(self, journey: ConversationJourney) -> None:
+        """注册一个同时支持启动与恢复的完整 journey 插件。
+
+        Args:
+            journey: 已声明稳定 ``journey_ids`` 与 ``subject_types`` 的插件对象。
+
+        Raises:
+            ValueError: 任一启动 ID 或 subject type 冲突。
+        """
+
+        for journey_id in journey.journey_ids:
+            normalized = journey_id.strip()
+            if not normalized:
+                raise ValueError("journey_id 不能为空")
+            if normalized in self._journeys_by_id:
+                raise ValueError(f"journey 已注册: {normalized}")
+        for subject_type in journey.subject_types:
+            normalized = subject_type.strip()
+            if not normalized:
+                raise ValueError("subject_type 不能为空")
+            if normalized in self._journeys_by_subject_type:
+                raise ValueError(f"subject_type 已注册: {normalized}")
+        for journey_id in journey.journey_ids:
+            self._journeys_by_id[journey_id] = journey
+        for subject_type in journey.subject_types:
+            self._journeys_by_subject_type[subject_type] = journey
+
+    def get_conversation_journey(self, journey_id: str) -> ConversationJourney | None:
+        """按稳定启动 ID 返回完整 journey 插件。"""
+
+        return self._journeys_by_id.get(journey_id)
+
+    def get_resume_journey(self, subject_type: str) -> ConversationJourney | None:
+        """按 subject type 返回恢复所需的 journey 插件。"""
+
+        return self._journeys_by_subject_type.get(subject_type)
+
+    def journey_ids(self) -> tuple[str, ...]:
+        """返回当前部署已注册的稳定启动 ID。"""
+
+        return tuple(self._journeys_by_id)
 
 
-@dataclass(frozen=True, slots=True)
-class ResearchJourneyResult:
-    security_id: str
-    research_card: CardEnvelope
-    scan_progress_started: CardEnvelope
-    scan_progress_completed: CardEnvelope
-    scan_result_card: CardEnvelope
-    plan_values: Mapping[str, JsonValue]
+class ConversationRunService(ConversationRuntimePort):
+    """协调会话、journey 插件、HITL、Card 和事件持久化。
 
+    Contract:
+        - 该类只安排步骤，业务规则属于 journey 对应 capability 的 application/domain 层。
+        - 自然语言只能通过 ``IntentClassifier`` 进入结构化路由，不能内置关键词分支。
+        - 需要人工决定的节点必须先持久化 HITL，再停止推进。
 
-class ResearchJourneyBackend(Protocol):
-    """外部数据与量化能力的可替换应用边界。"""
-
-    def resolve(
-        self, symbol: str, *, owner_id: str, run_id: str
-    ) -> tuple[SecurityCandidate, ...]: ...
-
-    def prepare(self, security_id: str, *, owner_id: str, run_id: str) -> ResearchJourneyResult: ...
-
-    def summarize(
-        self, scan_result: Mapping[str, JsonValue], *, owner_id: str, run_id: str
-    ) -> str: ...
-
-    def activate_reminder(
-        self,
-        *,
-        owner_id: str,
-        plan_id: str,
-        interaction_id: str,
-        idempotency_key: str,
-    ) -> CardEnvelope: ...
-
-
-@dataclass(frozen=True, slots=True)
-class ConversationRunResult:
-    run_id: str
-    thread_id: str
-    status: str
-    pending_interaction_id: str | None = None
-    card: CardEnvelope | None = None
-
-
-class ConversationRunService:
-    """首条 production vertical slice, 明确限制为 planning/HITL 工作流。"""
+    Side Effects:
+        写入 checkpoint、Card、artifact、run context 和事件仓储。
+    """
 
     def __init__(
         self,
@@ -105,26 +129,34 @@ class ConversationRunService:
         checkpointer: SQLiteThreadCheckpointer,
         event_store: SQLiteEventStore,
         hitl_service: DefaultHitlService,
-        planning: PlanningService | None = None,
-        research_journey: ResearchJourneyBackend | None = None,
+        intent_classifier: IntentClassifier,
         tracer: StructuredTracer | None = None,
+        journey_registry: JourneyRegistry | None = None,
     ) -> None:
+        self._database = database
         self._graph = graph
         self._checkpointer = checkpointer
         self._events = event_store
         self._hitl = hitl_service
-        self._planning = planning or PlanningService()
-        self._research_journey = research_journey
+        self._intent_classifier = intent_classifier
         self._tracer = tracer or StructuredTracer()
+        self._journey_registry = journey_registry or JourneyRegistry()
         self._cards = SQLiteAggregateRepository(database, "cards")
         self._artifacts = SQLiteAggregateRepository(database, "artifacts")
-        self._journeys = SQLiteAggregateRepository(database, "run_contexts")
-        self._reviews = SQLiteAggregateRepository(database, "reviews")
+        self._run_contexts = SQLiteAggregateRepository(database, "run_contexts")
         self._handled_interactions: dict[str, CardEnvelope] = {}
 
     @property
     def tracer(self) -> StructuredTracer:
+        """返回当前运行时使用的结构化 tracer。"""
+
         return self._tracer
+
+    @property
+    def hitl_service(self) -> DefaultHitlService:
+        """返回 journey 插件复用的 HITL service。"""
+
+        return self._hitl
 
     def start_run(
         self,
@@ -134,14 +166,26 @@ class ConversationRunService:
         message: str,
         correlation_id: str,
     ) -> ConversationRunResult:
+        """启动会话并推进到结束或第一个需要人工输入的节点。
+
+        每次调用都会先创建 ``run_id``、绑定用户与 thread、写入 ``run.started``，
+        随后再进入当前支持的旅程。所有不能安全识别的请求都会返回 unsupported
+        Card，而不会让 LLM 猜测业务动作。
+        """
+
         run_id = str(uuid4())
         self._checkpointer.bind_thread(owner_id=owner_id, thread_id=thread_id)
         self._events.start_run(owner_id=owner_id, run_id=run_id, thread_id=thread_id)
-        self._append_event(
+        classification = self._intent_classifier.classify(message=message, owner_id=owner_id)
+        self.append_event(
             owner_id,
             run_id,
             "run.started",
-            {"thread_id": thread_id, "intent": "planning"},
+            {
+                "thread_id": thread_id,
+                "intent": classification.intent.value,
+                "journey_id": classification.journey_id,
+            },
         )
         self._graph.invoke(
             AgentState(
@@ -149,757 +193,70 @@ class ConversationRunService:
                 thread_id=thread_id,
                 run_id=run_id,
                 message=message,
-                intent=Intent.PLANNING,
+                intent=classification.intent,
             )
         )
         self._tracer.emit(
             correlation_id=correlation_id,
             event_type="conversation.routed",
             outcome="success",
-            attributes={"run_id": run_id, "agent_id": "planning"},
+            attributes={
+                "run_id": run_id,
+                "agent_id": classification.intent.value,
+                "journey_id": classification.journey_id,
+                "reason_code": classification.reason_code,
+            },
         )
 
-        normalized = message.strip()
-        research_symbol = self._research_symbol(normalized)
-        if research_symbol is not None and self._research_journey is not None:
-            candidates = self._research_journey.resolve(
-                research_symbol, owner_id=owner_id, run_id=run_id
-            )
-            if not candidates:
-                notice = PlanningCardPresenter().unsupported(
-                    reference_id=run_id,
-                    unsupported_kind="security_not_found",
-                    message="无法解析为受支持的美股证券, 请补充交易所与代码。",
+        if classification.journey_id is not None:
+            journey = self._journey_registry.get_conversation_journey(classification.journey_id)
+            if journey is not None:
+                return journey.start(
+                    JourneyStartContext(owner_id, thread_id, run_id, classification),
+                    self,
                 )
-                self._publish_card(owner_id, thread_id, run_id, notice, "card.failed")
-                return ConversationRunResult(run_id, thread_id, "unsupported", card=notice)
-            if len(candidates) > 1:
-                interaction = self._create_security_choice(owner_id, thread_id, run_id, candidates)
-                card = self._publish_interaction(interaction, "card.created")
-                return ConversationRunResult(
-                    run_id, thread_id, "waiting_for_human", interaction.interaction_id, card
-                )
-            card = self._prepare_research_journey(
-                owner_id=owner_id,
-                thread_id=thread_id,
-                run_id=run_id,
-                security_id=candidates[0].security_id,
-            )
-            return ConversationRunResult(
-                run_id, thread_id, "waiting_for_human", card.source.source_id, card
-            )
-
-        if "新增一个交易" in normalized:
-            interaction = self._create_choice(owner_id, thread_id, run_id)
-            card = self._publish_interaction(interaction, "card.created")
-            return ConversationRunResult(
-                run_id, thread_id, "waiting_for_human", interaction.interaction_id, card
-            )
-
-        symbol = self._buy_symbol(normalized)
-        if symbol is not None:
-            notice = PlanningCardPresenter().unsupported(
-                reference_id=run_id,
-                unsupported_kind="execute_trade",
-                message="系统不能下单; 可以继续创建仅用于研究与决策的美股交易计划。",
-            )
-            self._publish_card(owner_id, thread_id, run_id, notice, "card.created")
-            plan = self._planning.create_draft(
-                PlanDraftRequest(
-                    plan_id=str(uuid4()),
-                    owner_id=owner_id,
-                    security_id=f"US:NASDAQ:{symbol}",
-                    direction=f"为 {symbol} 创建买入研究计划, 不执行下单",
-                    created_at=datetime.now(UTC),
-                    source_references=(PlanLineage("user_request", run_id, 1),),
-                    field_sources={"security_id": "用户输入", "direction": "用户输入"},
-                ),
-                idempotency_key=f"{run_id}:create-draft",
-            )
-            interaction = self._create_plan_form(plan, thread_id=thread_id, run_id=run_id)
-            card = self._publish_interaction(interaction, "card.created")
-            return ConversationRunResult(
-                run_id, thread_id, "waiting_for_human", interaction.interaction_id, card
-            )
-
-        notice = PlanningCardPresenter().unsupported(
+        notice = self.create_unsupported_notice(
             reference_id=run_id,
             unsupported_kind="conversation_intent",
-            message="当前真实会话入口仅支持美股交易计划; 研究与扫描全链仍在装配中。",
+            message="当前请求没有已注册的业务旅程, 请补充信息或联系管理员配置能力。",
         )
-        self._publish_card(owner_id, thread_id, run_id, notice, "card.failed")
+        self.publish_card(owner_id, thread_id, run_id, notice, "card.failed")
         return ConversationRunResult(run_id, thread_id, "unsupported", card=notice)
 
+    def register_conversation_journey(self, journey: ConversationJourney) -> None:
+        """注册一个完整的会话旅程插件。"""
+
+        self._journey_registry.register_conversation_journey(journey)
+
+    def registered_journey_ids(self) -> tuple[str, ...]:
+        """返回当前部署实际启用的 Journey ID，供诊断与测试读取。"""
+
+        return self._journey_registry.journey_ids()
+
     def handle_resolved_interaction(self, interaction: HumanInteraction) -> CardEnvelope | None:
+        """消费已解决的 HITL，并把恢复逻辑转交给对应 journey 插件。
+
+        同一 interaction 可能因网络重试被重复提交，因此先查询内存中的处理结果。
+        持久层还会校验版本和幂等键，二者共同避免一次批准被执行两次。
+        """
+
         replay = self._handled_interactions.get(interaction.interaction_id)
         if replay is not None:
             return replay
         if interaction.status is not InteractionStatus.RESOLVED:
             return None
-
-        if interaction.subject_type == "planning_choice":
-            self._publish_interaction(interaction, "card.resolved")
-            card = self._handle_choice(interaction)
-        elif interaction.subject_type in {"planning_request", "plan_form"}:
-            self._publish_interaction(interaction, "card.resolved")
-            card = self._handle_form(interaction)
-        elif interaction.subject_type == "plan_approval":
-            card = self._handle_approval(interaction)
-        elif interaction.subject_type == "research_security_choice":
-            self._publish_interaction(interaction, "card.resolved")
-            card = self._handle_security_choice(interaction)
-        elif interaction.subject_type == "scan_review":
-            card = self._handle_scan_review(interaction)
-        elif interaction.subject_type == "reminder_approval":
-            card = self._handle_reminder_approval(interaction)
-        elif interaction.subject_type == "plan_review":
-            card = self._handle_plan_review(interaction)
-        else:
+        journey = self._journey_registry.get_resume_journey(interaction.subject_type)
+        if journey is None:
             return None
-        self._handled_interactions[interaction.interaction_id] = card
+        card = journey.resume(interaction, self)
+        if card is not None:
+            self._handled_interactions[interaction.interaction_id] = card
         return card
 
-    def _handle_choice(self, interaction: HumanInteraction) -> CardEnvelope:
-        response = interaction.response or {}
-        if response.get("choice") != "create_trade_plan":
-            card = PlanningCardPresenter().unsupported(
-                reference_id=interaction.interaction_id,
-                unsupported_kind="execute_or_record_trade",
-                message="首版只支持创建交易计划, 不支持成交记录或真实下单。",
-            )
-            return self._publish_card(
-                interaction.owner_id,
-                interaction.thread_id,
-                interaction.run_id,
-                card,
-                "card.failed",
-            )
-        plan_id = str(uuid4())
-        next_interaction = self._create_request_form(
-            interaction.owner_id,
-            interaction.thread_id,
-            interaction.run_id,
-            plan_id,
-        )
-        return self._publish_interaction(next_interaction, "card.created")
+    def publish_interaction(self, interaction: HumanInteraction, event_type: str) -> CardEnvelope:
+        """保存一个 HITL 并投影为交互 Card。"""
 
-    def _handle_form(self, interaction: HumanInteraction) -> CardEnvelope:
-        values = interaction.response or {}
-        if interaction.subject_type == "planning_request":
-            symbol = _required_text(values, "symbol").upper()
-            plan = self._planning.create_draft(
-                _request_from_values(
-                    values,
-                    owner_id=interaction.owner_id,
-                    plan_id=interaction.subject_id,
-                    security_id=f"US:NASDAQ:{symbol}",
-                    run_id=interaction.run_id,
-                ),
-                idempotency_key=f"{interaction.interaction_id}:create-draft",
-            )
-        else:
-            current = self._planning.get_plan(
-                owner_id=interaction.owner_id, plan_id=interaction.subject_id
-            )
-            plan = self._planning.revise_draft(
-                _request_from_values(
-                    values,
-                    owner_id=interaction.owner_id,
-                    plan_id=current.plan_id,
-                    security_id=current.security_id,
-                    run_id=interaction.run_id,
-                ),
-                expected_version=current.version,
-                idempotency_key=f"{interaction.interaction_id}:revise-draft",
-            )
-        approval = self._create_plan_approval(
-            plan, thread_id=interaction.thread_id, run_id=interaction.run_id
-        )
-        return self._publish_interaction(approval, "card.created")
-
-    def _handle_approval(self, interaction: HumanInteraction) -> CardEnvelope:
-        current = self._planning.get_plan(
-            owner_id=interaction.owner_id, plan_id=interaction.subject_id
-        )
-        if interaction.resolution == "edit":
-            superseded = replace(
-                _interaction_card(interaction),
-                state="superseded",
-                actions=(),
-                payload_hash="",
-            )
-            self._publish_card(
-                interaction.owner_id,
-                interaction.thread_id,
-                interaction.run_id,
-                superseded,
-                "card.superseded",
-            )
-            revised = self._planning.revise_draft(
-                PlanDraftRequest(
-                    plan_id=current.plan_id,
-                    owner_id=current.owner_id,
-                    security_id=current.security_id,
-                    direction=current.direction,
-                    created_at=datetime.now(UTC),
-                    source_references=current.source_references,
-                    horizon=current.horizon,
-                    entry_condition=current.entry_condition,
-                    invalidation_condition=current.invalidation_condition,
-                    target=current.target,
-                    position_notes=current.position_notes,
-                    risk_notes=current.risk_notes,
-                    field_sources=current.field_sources,
-                ),
-                expected_version=current.version,
-                idempotency_key=f"{interaction.interaction_id}:edit-draft",
-            )
-            form = self._create_plan_form(
-                revised, thread_id=interaction.thread_id, run_id=interaction.run_id
-            )
-            return self._publish_interaction(form, "card.created")
-
-        self._publish_interaction(interaction, "card.resolved")
-        if interaction.resolution != "confirm":
-            return _interaction_card(interaction)
-        active = self._planning.activate(
-            owner_id=current.owner_id,
-            plan_id=current.plan_id,
-            expected_version=current.version,
-            actor_id=interaction.owner_id,
-            approved=True,
-            approved_payload_hash=current.approval_payload_hash,
-            approval_interaction_id=interaction.interaction_id,
-            idempotency_key=f"{interaction.interaction_id}:activate",
-            occurred_at=datetime.now(UTC),
-        )
-        artifact = PlanningCardPresenter().plan_artifact(active)
-        published = self._publish_card(
-            interaction.owner_id,
-            interaction.thread_id,
-            interaction.run_id,
-            artifact,
-            "card.created",
-            artifact=True,
-        )
-        if self._journeys.get(interaction.owner_id, interaction.run_id) is not None:
-            reminder = self._create_reminder_approval(active, interaction)
-            self._publish_interaction(reminder, "card.created")
-        return published
-
-    def _handle_security_choice(self, interaction: HumanInteraction) -> CardEnvelope:
-        selected = _required_text(interaction.response or {}, "selected_security")
-        return self._prepare_research_journey(
-            owner_id=interaction.owner_id,
-            thread_id=interaction.thread_id,
-            run_id=interaction.run_id,
-            security_id=selected,
-        )
-
-    def _prepare_research_journey(
-        self, *, owner_id: str, thread_id: str, run_id: str, security_id: str
-    ) -> CardEnvelope:
-        backend = self._research_journey
-        if backend is None:  # pragma: no cover - 入口已 fail closed
-            raise RuntimeError("research journey backend 未装配")
-        result = backend.prepare(security_id, owner_id=owner_id, run_id=run_id)
-        self._publish_card(
-            owner_id, thread_id, run_id, result.research_card, "card.created", artifact=True
-        )
-        self._publish_card(
-            owner_id, thread_id, run_id, result.scan_progress_started, "card.created"
-        )
-        self._publish_card(
-            owner_id, thread_id, run_id, result.scan_progress_completed, "card.resolved"
-        )
-        self._publish_card(
-            owner_id, thread_id, run_id, result.scan_result_card, "card.created", artifact=True
-        )
-        self._journeys.save(
-            owner_id=owner_id,
-            aggregate_id=run_id,
-            expected_version=0,
-            payload={
-                "thread_id": thread_id,
-                "security_id": result.security_id,
-                "scan_result": result.scan_result_card.to_mapping(),
-                "plan_values": dict(result.plan_values),
-            },
-        )
-        review = self._create_scan_review(
-            owner_id=owner_id,
-            thread_id=thread_id,
-            run_id=run_id,
-            scan_result=result.scan_result_card,
-        )
-        return self._publish_interaction(review, "card.created")
-
-    def _handle_scan_review(self, interaction: HumanInteraction) -> CardEnvelope:
-        self._publish_interaction(interaction, "card.resolved")
-        if interaction.resolution != "confirm":
-            return _interaction_card(interaction)
-        journey = self._required_journey(interaction.owner_id, interaction.run_id)
-        scan_result = journey["scan_result"]
-        plan_values = journey["plan_values"]
-        if not isinstance(scan_result, Mapping) or not isinstance(plan_values, Mapping):
-            raise RuntimeError("research run context 格式无效")
-        backend = self._research_journey
-        if backend is None:  # pragma: no cover
-            raise RuntimeError("research journey backend 未装配")
-        summary = backend.summarize(
-            scan_result, owner_id=interaction.owner_id, run_id=interaction.run_id
-        )
-        plan_id = str(uuid4())
-        plan = self._planning.create_draft(
-            _journey_plan_request(
-                plan_values,
-                plan_id=plan_id,
-                owner_id=interaction.owner_id,
-                security_id=_required_text(journey, "security_id"),
-                run_id=interaction.run_id,
-                summary=summary,
-            ),
-            idempotency_key=f"{interaction.interaction_id}:research-plan-draft",
-        )
-        approval = self._create_plan_approval(
-            plan, thread_id=interaction.thread_id, run_id=interaction.run_id
-        )
-        return self._publish_interaction(approval, "card.created")
-
-    def _handle_reminder_approval(self, interaction: HumanInteraction) -> CardEnvelope:
-        self._publish_interaction(interaction, "card.resolved")
-        if interaction.resolution != "confirm":
-            return _interaction_card(interaction)
-        backend = self._research_journey
-        if backend is None:  # pragma: no cover
-            raise RuntimeError("research journey backend 未装配")
-        reminder = backend.activate_reminder(
-            owner_id=interaction.owner_id,
-            plan_id=interaction.subject_id,
-            interaction_id=interaction.interaction_id,
-            idempotency_key=f"{interaction.interaction_id}:activate-reminder",
-        )
-        published = self._publish_card(
-            interaction.owner_id,
-            interaction.thread_id,
-            interaction.run_id,
-            reminder,
-            "card.created",
-            artifact=True,
-        )
-        plan = self._planning.get_plan(
-            owner_id=interaction.owner_id, plan_id=interaction.subject_id
-        )
-        review = self._create_plan_review(plan, interaction)
-        self._publish_interaction(review, "card.created")
-        return published
-
-    def _handle_plan_review(self, interaction: HumanInteraction) -> CardEnvelope:
-        self._publish_interaction(interaction, "card.resolved")
-        if interaction.resolution != "confirm":
-            return _interaction_card(interaction)
-        current = self._planning.get_plan(
-            owner_id=interaction.owner_id, plan_id=interaction.subject_id
-        )
-        result = self._planning.record_review(
-            owner_id=interaction.owner_id,
-            review_id=str(uuid4()),
-            subject_type="plan",
-            subject_id=current.plan_id,
-            subject_version=current.version,
-            outcome=ReviewOutcome.USEFUL,
-            annotations={"note": "用户确认研究、扫描、计划与提醒闭环"},
-            lineage=(),
-            feedback_destinations=("future_strategy_draft", "future_training_data"),
-            actor_id=interaction.owner_id,
-            approval_interaction_id=interaction.interaction_id,
-            idempotency_key=f"{interaction.interaction_id}:record-review",
-            created_at=datetime.now(UTC),
-        )
-        self._reviews.save(
-            owner_id=interaction.owner_id,
-            aggregate_id=result.review.review_id,
-            expected_version=0,
-            payload={
-                "thread_id": interaction.thread_id,
-                "run_id": interaction.run_id,
-                "subject_id": result.review.subject_id,
-                "subject_version": result.review.subject_version,
-                "outcome": result.review.outcome.value,
-            },
-        )
-        reviewed = result.reviewed_plan
-        if reviewed is None:  # pragma: no cover
-            raise RuntimeError("计划复盘没有返回 reviewed plan")
-        return self._publish_card(
-            interaction.owner_id,
-            interaction.thread_id,
-            interaction.run_id,
-            PlanningCardPresenter().plan_artifact(reviewed),
-            "card.created",
-            artifact=True,
-        )
-
-    def _create_choice(self, owner_id: str, thread_id: str, run_id: str) -> HumanInteraction:
-        payload: dict[str, JsonValue] = {
-            "title": "请选择要新增的内容",
-            "description": "首版只支持创建美股交易计划, 不支持成交记录或真实下单。",
-            "text_fallback": "请选择创建交易计划; 其他交易操作暂不支持。",
-        }
-        return self._hitl.create(
-            HumanInteraction(
-                str(uuid4()),
-                owner_id,
-                InteractionType.CLARIFICATION,
-                InteractionStatus.PENDING,
-                payload,
-                1,
-                thread_id,
-                run_id,
-                "planning_choice",
-                run_id,
-                1,
-                _payload_hash(payload),
-                {
-                    "type": "object",
-                    "properties": {
-                        "choice": {
-                            "type": "string",
-                            "title": "操作类型",
-                            "enum": [
-                                "create_trade_plan",
-                                "record_historical_trade",
-                                "execute_trade",
-                            ],
-                            "x-options": [
-                                {
-                                    "key": "create_trade_plan",
-                                    "label": "创建交易计划",
-                                    "description": "补充条件并在确认后激活计划。",
-                                    "disabled": False,
-                                },
-                                {
-                                    "key": "record_historical_trade",
-                                    "label": "记录已发生的交易",
-                                    "description": "首版暂不支持手工成交记录。",
-                                    "disabled": True,
-                                },
-                                {
-                                    "key": "execute_trade",
-                                    "label": "执行真实交易",
-                                    "description": "系统没有下单或账户能力。",
-                                    "disabled": True,
-                                },
-                            ],
-                        }
-                    },
-                    "required": ["choice"],
-                    "additionalProperties": False,
-                },
-                datetime.now(UTC),
-                datetime.now(UTC) + timedelta(hours=24),
-            )
-        )
-
-    def _create_security_choice(
-        self,
-        owner_id: str,
-        thread_id: str,
-        run_id: str,
-        candidates: tuple[SecurityCandidate, ...],
-    ) -> HumanInteraction:
-        payload: dict[str, JsonValue] = {
-            "title": "请选择具体美股证券",
-            "description": "同一代码对应多个美国上市标的, 需要先澄清。",
-            "text_fallback": "请选择具体美股证券。",
-        }
-        options: list[JsonValue] = [
-            {
-                "key": item.security_id,
-                "label": item.label,
-                "description": item.security_id,
-                "disabled": False,
-            }
-            for item in candidates
-        ]
-        return self._hitl.create(
-            HumanInteraction(
-                str(uuid4()),
-                owner_id,
-                InteractionType.CLARIFICATION,
-                InteractionStatus.PENDING,
-                payload,
-                1,
-                thread_id,
-                run_id,
-                "research_security_choice",
-                run_id,
-                1,
-                _payload_hash(payload),
-                {
-                    "type": "object",
-                    "properties": {
-                        "selected_security": {
-                            "type": "string",
-                            "title": "候选证券",
-                            "enum": [item.security_id for item in candidates],
-                            "x-options": options,
-                        }
-                    },
-                    "required": ["selected_security"],
-                    "additionalProperties": False,
-                },
-                datetime.now(UTC),
-                datetime.now(UTC) + timedelta(hours=24),
-            )
-        )
-
-    def _create_scan_review(
-        self,
-        *,
-        owner_id: str,
-        thread_id: str,
-        run_id: str,
-        scan_result: CardEnvelope,
-    ) -> HumanInteraction:
-        payload: dict[str, JsonValue] = {
-            "title": "请复核量化扫描结论",
-            "description": "确认后才会让 LLM 总结持久化结果并生成计划草稿。",
-            "findings": [
-                {
-                    "label": "扫描候选",
-                    "detail": scan_result.text_fallback,
-                    "severity": "medium",
-                }
-            ],
-            "text_fallback": "请复核量化扫描结论。",
-        }
-        return self._hitl.create(
-            HumanInteraction(
-                str(uuid4()),
-                owner_id,
-                InteractionType.REVIEW,
-                InteractionStatus.PENDING,
-                payload,
-                1,
-                thread_id,
-                run_id,
-                "scan_review",
-                scan_result.source.source_id,
-                scan_result.source.version,
-                _payload_hash(payload),
-                {"type": "object", "properties": {}, "additionalProperties": False},
-                datetime.now(UTC),
-                datetime.now(UTC) + timedelta(hours=24),
-            )
-        )
-
-    def _create_reminder_approval(
-        self, plan: TradingPlan, source: HumanInteraction
-    ) -> HumanInteraction:
-        payload: dict[str, JsonValue] = {
-            "title": "批准启用计划复核提醒",
-            "description": "提醒只表示条件观察与通知, 不表示下单或成交。",
-            "summary": f"为计划 {plan.plan_id} 启用应用内定时复核提醒。",
-            "facts": [
-                {"label": "计划", "detail": plan.plan_id, "severity": "low"},
-                {"label": "渠道", "detail": "in_app", "severity": "low"},
-            ],
-            "text_fallback": "请确认启用计划复核提醒。",
-        }
-        return self._hitl.create(
-            HumanInteraction(
-                str(uuid4()),
-                plan.owner_id,
-                InteractionType.APPROVAL,
-                InteractionStatus.PENDING,
-                payload,
-                1,
-                source.thread_id,
-                source.run_id,
-                "reminder_approval",
-                plan.plan_id,
-                plan.version,
-                _payload_hash(payload),
-                {"type": "object", "properties": {}, "additionalProperties": False},
-                datetime.now(UTC),
-                datetime.now(UTC) + timedelta(hours=24),
-            )
-        )
-
-    def _create_plan_review(self, plan: TradingPlan, source: HumanInteraction) -> HumanInteraction:
-        payload: dict[str, JsonValue] = {
-            "title": "完成本次计划复盘",
-            "description": "复盘只写入未来策略草稿或训练数据, 不修改历史版本。",
-            "findings": [
-                {
-                    "label": "闭环状态",
-                    "detail": "研究、扫描、计划和提醒均已保留来源关系。",
-                    "severity": "low",
-                }
-            ],
-            "text_fallback": "请确认完成本次计划复盘。",
-        }
-        return self._hitl.create(
-            HumanInteraction(
-                str(uuid4()),
-                plan.owner_id,
-                InteractionType.REVIEW,
-                InteractionStatus.PENDING,
-                payload,
-                1,
-                source.thread_id,
-                source.run_id,
-                "plan_review",
-                plan.plan_id,
-                plan.version,
-                _payload_hash(payload),
-                {"type": "object", "properties": {}, "additionalProperties": False},
-                datetime.now(UTC),
-                datetime.now(UTC) + timedelta(hours=24),
-            )
-        )
-
-    def _create_request_form(
-        self, owner_id: str, thread_id: str, run_id: str, plan_id: str
-    ) -> HumanInteraction:
-        return self._create_form_interaction(
-            owner_id=owner_id,
-            thread_id=thread_id,
-            run_id=run_id,
-            subject_type="planning_request",
-            plan_id=plan_id,
-            plan_version=1,
-            symbol=None,
-            direction="创建买入研究计划, 不执行下单",
-            defaults={},
-        )
-
-    def _create_plan_form(
-        self, plan: TradingPlan, *, thread_id: str, run_id: str
-    ) -> HumanInteraction:
-        return self._create_form_interaction(
-            owner_id=plan.owner_id,
-            thread_id=thread_id,
-            run_id=run_id,
-            subject_type="plan_form",
-            plan_id=plan.plan_id,
-            plan_version=plan.version,
-            symbol=plan.security_id.rsplit(":", 1)[-1],
-            direction=plan.direction,
-            defaults={field: getattr(plan, field) for field in _PLAN_FIELDS},
-        )
-
-    def _create_form_interaction(
-        self,
-        *,
-        owner_id: str,
-        thread_id: str,
-        run_id: str,
-        subject_type: str,
-        plan_id: str,
-        plan_version: int,
-        symbol: str | None,
-        direction: str,
-        defaults: Mapping[str, str | None],
-    ) -> HumanInteraction:
-        payload: dict[str, JsonValue] = {
-            "title": "补充美股交易计划",
-            "description": "系统不会下单。请一次补齐证券、周期、入场、失效、目标、仓位和风险。",
-            "text_fallback": "请补充完整的美股交易计划字段。",
-        }
-        properties: dict[str, JsonValue] = {
-            "symbol": {
-                "type": "string",
-                "title": "美股代码",
-                "pattern": "^[A-Za-z]{1,5}$",
-                "default": symbol,
-                "readOnly": symbol is not None,
-            },
-            "direction": {
-                "type": "string",
-                "title": "方向或逻辑",
-                "minLength": 1,
-                "default": direction,
-            },
-        }
-        labels = {
-            "horizon": "计划周期",
-            "entry_condition": "入场条件",
-            "invalidation_condition": "失效或止损条件",
-            "target": "目标条件",
-            "position_notes": "仓位备注",
-            "risk_notes": "风险说明",
-        }
-        for field, label in labels.items():
-            properties[field] = {
-                "type": "string",
-                "title": label,
-                "minLength": 1,
-                "maxLength": 1000,
-                "default": defaults.get(field),
-                "format": "textarea" if field != "horizon" else "text",
-            }
-        schema: dict[str, JsonValue] = {
-            "type": "object",
-            "properties": properties,
-            "required": ["symbol", "direction", *_PLAN_FIELDS],
-            "additionalProperties": False,
-        }
-        return self._hitl.create(
-            HumanInteraction(
-                str(uuid4()),
-                owner_id,
-                InteractionType.EXCEPTION_RESOLUTION,
-                InteractionStatus.PENDING,
-                payload,
-                1,
-                thread_id,
-                run_id,
-                subject_type,
-                plan_id,
-                plan_version,
-                _payload_hash(payload),
-                schema,
-                datetime.now(UTC),
-                datetime.now(UTC) + timedelta(hours=24),
-            )
-        )
-
-    def _create_plan_approval(
-        self, plan: TradingPlan, *, thread_id: str, run_id: str
-    ) -> HumanInteraction:
-        preview = PlanningCardPresenter().plan_approval(plan)
-        payload: dict[str, JsonValue] = {
-            "title": preview.data["title"],
-            "description": preview.data["description"],
-            "summary": preview.data["summary"],
-            "facts": preview.data["facts"],
-            "provenance": preview.data["provenance"],
-            "text_fallback": preview.text_fallback,
-        }
-        return self._hitl.create(
-            HumanInteraction(
-                str(uuid4()),
-                plan.owner_id,
-                InteractionType.APPROVAL,
-                InteractionStatus.PENDING,
-                payload,
-                1,
-                thread_id,
-                run_id,
-                "plan_approval",
-                plan.plan_id,
-                plan.version,
-                _payload_hash(payload),
-                {"type": "object", "properties": {}, "additionalProperties": False},
-                datetime.now(UTC),
-                datetime.now(UTC) + timedelta(hours=24),
-            )
-        )
-
-    def _publish_interaction(self, interaction: HumanInteraction, event_type: str) -> CardEnvelope:
-        return self._publish_card(
+        return self.publish_card(
             interaction.owner_id,
             interaction.thread_id,
             interaction.run_id,
@@ -907,7 +264,7 @@ class ConversationRunService:
             event_type,
         )
 
-    def _publish_card(
+    def publish_card(
         self,
         owner_id: str,
         thread_id: str,
@@ -917,6 +274,8 @@ class ConversationRunService:
         *,
         artifact: bool = False,
     ) -> CardEnvelope:
+        """原子化地保存 Card，并追加供 SSE/Web 消费的领域事件。"""
+
         repository = self._artifacts if artifact else self._cards
         existing = repository.get(owner_id, card.card_id)
         expected_version = 0 if existing is None else existing.version
@@ -926,7 +285,7 @@ class ConversationRunService:
             expected_version=expected_version,
             payload={"thread_id": thread_id, "run_id": run_id, "card": card.to_mapping()},
         )
-        self._append_event(
+        self.append_event(
             owner_id,
             run_id,
             event_type,
@@ -940,9 +299,86 @@ class ConversationRunService:
         )
         return card
 
-    def _append_event(
+    def create_unsupported_notice(
+        self,
+        *,
+        reference_id: str,
+        unsupported_kind: str,
+        message: str,
+        source_type: str = "conversation_request",
+        revision: int = 1,
+    ) -> CardEnvelope:
+        """创建一张通用 unsupported 提示卡。"""
+
+        return CardEnvelope(
+            protocol_version=CARD_PROTOCOL_VERSION,
+            card_id=stable_card_id("unsupported", reference_id),
+            kind="notice.unsupported",
+            schema_version=1,
+            revision=revision,
+            source=CardSource(source_type, reference_id, 1),
+            state="failed",
+            data={
+                "title": "当前请求不受支持",
+                "message": message,
+                "unsupported_kind": unsupported_kind,
+                "unsupported_schema_version": 1,
+            },
+            actions=("refresh",),
+            text_fallback=message,
+        )
+
+    def save_run_context(
+        self,
+        *,
+        owner_id: str,
+        run_id: str,
+        thread_id: str,
+        payload: Mapping[str, JsonValue],
+        expected_version: int = 0,
+    ) -> None:
+        """保存旅程恢复上下文。"""
+
+        self._run_contexts.save(
+            owner_id=owner_id,
+            aggregate_id=run_id,
+            expected_version=expected_version,
+            payload={"thread_id": thread_id, **dict(payload)},
+        )
+
+    def save_resource(
+        self,
+        *,
+        owner_id: str,
+        resource_name: str,
+        resource_id: str,
+        thread_id: str,
+        run_id: str,
+        payload: Mapping[str, JsonValue],
+        expected_version: int = 0,
+    ) -> None:
+        """保存一个不需要 Card 投影的结构化资源。"""
+
+        SQLiteAggregateRepository(self._database, resource_name).save(
+            owner_id=owner_id,
+            aggregate_id=resource_id,
+            expected_version=expected_version,
+            payload={"thread_id": thread_id, "run_id": run_id, **dict(payload)},
+        )
+
+    def require_run_context(self, owner_id: str, run_id: str) -> Mapping[str, JsonValue]:
+        """读取一个必须存在的旅程恢复上下文。"""
+
+        context = self._run_contexts.get(owner_id, run_id)
+        if context is None:
+            raise RuntimeError("journey run context 不存在")
+        return context.payload
+
+    def append_event(
         self, owner_id: str, run_id: str, event_type: str, payload: Mapping[str, JsonValue]
     ) -> None:
+        """在一个 run 内追加严格递增的事件序号。"""
+
         previous = self._events.replay(owner_id=owner_id, run_id=run_id, after_sequence=0)
         self._events.append(
             owner_id=owner_id,
@@ -956,119 +392,39 @@ class ConversationRunService:
             ),
         )
 
-    def _required_journey(self, owner_id: str, run_id: str) -> Mapping[str, JsonValue]:
-        journey = self._journeys.get(owner_id, run_id)
-        if journey is None:
-            raise RuntimeError("research run context 不存在")
-        return journey.payload
-
     @staticmethod
-    def _buy_symbol(message: str) -> str | None:
-        if "买" not in message and "buy" not in message.casefold():
-            return None
-        candidates = [match.group(1).upper() for match in _SYMBOL_PATTERN.finditer(message)]
-        return candidates[-1] if candidates else None
+    def required_entity(classification: IntentClassification, name: str) -> str:
+        """读取旅程所需实体，并在分类协议不完整时 fail closed。
 
-    @staticmethod
-    def _research_symbol(message: str) -> str | None:
-        if not any(keyword in message for keyword in ("研究", "分析", "扫描")):
-            return None
-        candidates = [match.group(1).upper() for match in _SYMBOL_PATTERN.finditer(message)]
-        return candidates[-1] if candidates else None
+        Args:
+            classification: 已通过分类 adapter 本地校验的结构化结果。
+            name: 当前旅程要求的实体名称。
+
+        Returns:
+            去除首尾空白并转为大写的实体值。
+
+        Raises:
+            ValueError: 分类器选择了旅程，却没有返回该旅程要求的实体。
+        """
+
+        value = classification.entity(name)
+        if value is None or not value.strip():
+            raise ValueError(f"journey {classification.journey_id} 缺少实体 {name}")
+        return value.strip().upper()
 
 
 def _interaction_card(interaction: HumanInteraction) -> CardEnvelope:
+    """把后端 HITL 聚合投影为前端统一 Card 协议。"""
+
     projected = HitlCardPresenter().present(interaction)
     return replace(projected, revision=interaction.version)
 
 
-def _required_text(values: Mapping[str, JsonValue], field: str) -> str:
-    value = values.get(field)
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"计划字段缺少 {field}")
-    return value.strip()
-
-
-def _request_from_values(
-    values: Mapping[str, JsonValue],
-    *,
-    owner_id: str,
-    plan_id: str,
-    security_id: str,
-    run_id: str,
-) -> PlanDraftRequest:
-    return PlanDraftRequest(
-        plan_id=plan_id,
-        owner_id=owner_id,
-        security_id=security_id,
-        direction=_required_text(values, "direction"),
-        created_at=datetime.now(UTC),
-        source_references=(PlanLineage("user_request", run_id, 1),),
-        horizon=_required_text(values, "horizon"),
-        entry_condition=_required_text(values, "entry_condition"),
-        invalidation_condition=_required_text(values, "invalidation_condition"),
-        target=_required_text(values, "target"),
-        position_notes=_required_text(values, "position_notes"),
-        risk_notes=_required_text(values, "risk_notes"),
-        field_sources={field: "用户输入" for field in ("direction", *_PLAN_FIELDS)},
-    )
-
-
-def _journey_plan_request(
-    values: Mapping[str, JsonValue],
-    *,
-    plan_id: str,
-    owner_id: str,
-    security_id: str,
-    run_id: str,
-    summary: str,
-) -> PlanDraftRequest:
-    scan_result_id = _required_text(values, "scan_result_id")
-    return PlanDraftRequest(
-        plan_id=plan_id,
-        owner_id=owner_id,
-        security_id=security_id,
-        direction=_required_text(values, "direction"),
-        created_at=datetime.now(UTC),
-        source_references=(
-            PlanLineage(
-                "scan_result",
-                scan_result_id,
-                1,
-                evidence_ids=("e-quote", "e-fundamental"),
-                strategy_id="strategy-1",
-                strategy_version=1,
-                model_version_id="model-approved",
-            ),
-        ),
-        horizon=_required_text(values, "horizon"),
-        entry_condition=_required_text(values, "entry_condition"),
-        invalidation_condition=_required_text(values, "invalidation_condition"),
-        target=_required_text(values, "target"),
-        position_notes=_required_text(values, "position_notes"),
-        risk_notes=f"{_required_text(values, 'risk_notes')} LLM 摘要: {summary}",
-        field_sources={
-            "direction": "用户请求",
-            "horizon": "strategy_version",
-            "entry_condition": "research_artifact",
-            "invalidation_condition": "research_artifact",
-            "target": "scan_result",
-            "position_notes": "用户策略",
-            "risk_notes": "research_summary",
-        },
-    )
-
-
-def _payload_hash(payload: Mapping[str, JsonValue]) -> str:
-    from trade_agent.adapters.sqlite.json_support import payload_hash
-
-    return payload_hash(payload)
-
-
 __all__ = [
+    "ConversationJourney",
     "ConversationRunResult",
     "ConversationRunService",
-    "ResearchJourneyBackend",
-    "ResearchJourneyResult",
-    "SecurityCandidate",
+    "GraphInvoker",
+    "JourneyRegistry",
+    "JourneyStartContext",
 ]

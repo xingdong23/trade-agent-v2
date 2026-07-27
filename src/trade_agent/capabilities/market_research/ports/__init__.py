@@ -1,3 +1,5 @@
+"""Market Research capability 所需的 repository 与 provider ports。"""
+
 from typing import Protocol
 
 from trade_agent.capabilities.contracts import CapabilityRepository

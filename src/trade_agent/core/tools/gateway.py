@@ -1,4 +1,11 @@
-"""所有 Agent tool 调用的唯一受控入口。"""
+"""所有 Agent Tool 调用的唯一受控入口。
+
+课堂上可以把这个模块看成“服务端防火墙”：
+
+- ``ToolRegistry`` 负责回答“系统里有哪些 Tool”；
+- ``ToolPolicy`` 负责回答“当前 Agent 能不能调用它”；
+- ``DefaultToolGateway`` 负责回答“输入是否合法、执行失败怎么归一化、输出能否对外发布”。
+"""
 
 from __future__ import annotations
 
@@ -7,6 +14,7 @@ from collections.abc import Iterable
 from .contracts import (
     ToolError,
     ToolErrorCode,
+    ToolExecutionError,
     ToolManifest,
     ToolProtocol,
     ToolRequest,
@@ -17,6 +25,12 @@ from .schema import JsonSchemaValidator, SchemaValidationError
 
 
 class ToolRegistry:
+    """保存可调用 Tool 的注册表。
+
+    这里不处理权限和参数校验，只维护 ``tool_id -> tool 实现`` 的唯一映射。
+    这样测试和生产都可以使用同一套查找逻辑。
+    """
+
     def __init__(self, tools: Iterable[ToolProtocol] = ()) -> None:
         self._tools: dict[str, ToolProtocol] = {}
         for tool in tools:
@@ -36,6 +50,20 @@ class ToolRegistry:
 
 
 class DefaultToolGateway:
+    """把权限、校验和执行串成一次受控 Tool 调用。
+
+    调用顺序固定为：
+
+    1. 查找 Tool；
+    2. 检查 manifest policy；
+    3. 校验输入 schema；
+    4. 调用 Tool；
+    5. 校验输出 schema；
+    6. 把异常统一映射为 ``ToolResult``。
+
+    这样 Agent 永远拿到结构化结果，而不是未约束的 Python 异常。
+    """
+
     def __init__(
         self,
         registry: ToolRegistry,
@@ -47,6 +75,8 @@ class DefaultToolGateway:
         self._validator = validator or JsonSchemaValidator()
 
     async def invoke(self, request: ToolRequest) -> ToolResult:
+        """执行一次完整的 Tool 调用防线。"""
+
         tool = self._registry.get(request.tool_id)
         if tool is None:
             return self._failure(ToolErrorCode.UNKNOWN_TOOL, "未知 tool id")
@@ -55,6 +85,7 @@ class DefaultToolGateway:
         if denied is not None:
             return ToolResult("error", error=denied)
         try:
+            # 输入先过 schema，避免 Tool 实现里充斥重复的字段形状判断。
             self._validator.validate(request.arguments, tool.manifest.input_schema)
         except SchemaValidationError as error:
             return self._failure(ToolErrorCode.INVALID_INPUT, str(error))
@@ -63,26 +94,19 @@ class DefaultToolGateway:
             result = await tool.handle(request)
         except TimeoutError:
             return self._failure(ToolErrorCode.TIMEOUT, "tool 调用超时", retryable=True)
+        except ToolExecutionError as error:
+            return self._failure(error.code, error.message, retryable=error.retryable)
         except (KeyError, TypeError, ValueError) as error:
             return self._failure(ToolErrorCode.INVALID_INPUT, str(error))
-        except RuntimeError as error:
-            return self._map_runtime_error(error)
+        except RuntimeError:
+            return self._failure(ToolErrorCode.INTERNAL, "tool 执行失败")
 
         try:
+            # 输出也必须过 schema，防止 Tool 静默返回前端无法消费的数据。
             self._validator.validate(result.payload, tool.manifest.output_schema)
         except SchemaValidationError as error:
             return self._failure(ToolErrorCode.INVALID_OUTPUT, str(error))
         return result
-
-    @staticmethod
-    def _map_runtime_error(error: RuntimeError) -> ToolResult:
-        message = str(error)
-        normalized = message.casefold()
-        if "conflict" in normalized or "冲突" in message:
-            return DefaultToolGateway._failure(ToolErrorCode.CONFLICT, message)
-        if "unavailable" in normalized or "不可用" in message:
-            return DefaultToolGateway._failure(ToolErrorCode.UNAVAILABLE, message, retryable=True)
-        return DefaultToolGateway._failure(ToolErrorCode.INTERNAL, "tool 执行失败")
 
     @staticmethod
     def _failure(code: ToolErrorCode, message: str, *, retryable: bool = False) -> ToolResult:

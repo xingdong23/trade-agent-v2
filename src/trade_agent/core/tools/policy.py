@@ -6,7 +6,27 @@ from .contracts import ToolError, ToolErrorCode, ToolManifest, ToolRequest
 
 
 class ToolPolicy(Protocol):
-    def evaluate(self, request: ToolRequest, manifest: ToolManifest) -> ToolError | None: ...
+    """工具调用前的授权与约束评估协议。
+
+    Contract:
+        - 评估必须是纯函数式决策，不直接执行工具副作用。
+        - 返回 ``None`` 表示允许调用；返回 ``ToolError`` 表示拒绝原因。
+
+    Implemented by:
+        trade_agent.core.tools.policy.ManifestToolPolicy
+    """
+
+    def evaluate(self, request: ToolRequest, manifest: ToolManifest) -> ToolError | None:
+        """根据请求与工具声明决定是否允许执行。
+
+        Args:
+            request: 当前工具调用请求。
+            manifest: 被调用工具的注册声明。
+
+        Returns:
+            允许执行时返回 ``None``，否则返回稳定错误对象。
+        """
+        ...
 
 
 class ManifestToolPolicy:

@@ -16,6 +16,14 @@ from trade_agent.core.security.authentication import AuthenticationError, Verifi
 
 @dataclass(frozen=True, slots=True)
 class OidcProviderMetadata:
+    """OIDC discovery 文档中本系统关心的最小字段集合。
+
+    Attributes:
+        issuer: provider 宣告的标准 issuer。
+        jwks_uri: 用于下载签名公钥集合的端点。
+        signing_algorithms: provider 允许的 token 签名算法列表。
+    """
+
     issuer: str
     jwks_uri: str
     signing_algorithms: tuple[str, ...]

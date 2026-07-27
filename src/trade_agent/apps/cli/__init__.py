@@ -1,4 +1,8 @@
-"""与 API 共享 application container 的本地 CLI。"""
+"""本地命令行适配器。
+
+CLI 与 HTTP API 共享同一个 application container 和会话运行时，所以它不是另一套
+业务实现。课程中可以先用 CLI 观察 JSON、HITL 和资源变化，再进入 Web/SSE 层。
+"""
 
 from __future__ import annotations
 
@@ -45,6 +49,8 @@ def execute(
     container: ApplicationContainer,
     settings: AppSettings,
 ) -> MappingResult:
+    """解析一条 CLI 命令并委托给对应 application service。"""
+
     args = _parser().parse_args(list(argv))
     owner_id = args.user or settings.authentication.development_user_id
     if not owner_id:

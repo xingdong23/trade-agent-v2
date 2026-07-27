@@ -1,4 +1,9 @@
-"""FastAPI adapter: authentication、HITL、resource 与 SSE。"""
+"""Trade Agent 的 HTTP 适配器。
+
+API 层只负责传输协议：认证用户、校验请求、调用 application service，并把结果
+转换为 JSON 或 SSE。业务规则不应写在路由函数中。前端围绕三类接口工作：启动
+会话、响应 HITL、订阅 Card 事件；资源接口用于刷新页面后的状态恢复。
+"""
 
 import json
 from collections.abc import Callable, Iterator, Mapping
@@ -35,6 +40,12 @@ from trade_agent.core.security import (
 
 
 class StrictModel(BaseModel):
+    """拒绝未声明字段的 API 请求基类，避免客户端拼写错误被静默忽略。
+
+    Attributes:
+        model_config: Pydantic 严格字段策略，禁止额外字段。
+    """
+
     model_config = ConfigDict(extra="forbid")
 
 
@@ -61,6 +72,13 @@ class ResourceWriteRequest(StrictModel):
 
 @dataclass(frozen=True, slots=True)
 class ApiServices:
+    """挂到 FastAPI app.state 上的进程级依赖。
+
+    Attributes:
+        container: 已完成装配的应用容器。
+        settings: 当前进程的类型化配置。
+    """
+
     container: ApplicationContainer
     settings: AppSettings
 
@@ -70,6 +88,8 @@ def create_app(
     container: ApplicationContainer | None = None,
     token_verifier: TokenVerifier | None = None,
 ) -> FastAPI:
+    """创建 API 应用，并让所有路由共享同一个 application container。"""
+
     resolved_settings = settings or AppSettings()
     resolved_container = container or build_application_container(resolved_settings)
     services = ApiServices(resolved_container, resolved_settings)
@@ -158,9 +178,16 @@ def create_app(
         request: HitlResponseRequest,
         user: Annotated[UserContext, Depends(user_context)],
     ) -> object:
+        """校验并解决人工交互，然后恢复原会话流程。
+
+        payload hash 防止用户确认后端已更新的旧卡片，revision 防止并发覆盖，
+        idempotency key 则保证客户端超时重试不会重复执行审批动作。
+        """
+
         command_store = _required(resolved_container.command_store)
         request_payload: dict[str, JsonValue] = request.model_dump(mode="json")
         digest = payload_hash(request_payload)
+        # 幂等收据必须在执行任何业务动作前创建，重试时可以直接返回原结果。
         receipt = command_store.begin(
             owner_id=user.user_id,
             idempotency_key=request.idempotency_key,

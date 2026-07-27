@@ -1,3 +1,5 @@
+"""Watchlist capability 的导入、分类与 universe 冻结用例。"""
+
 from trade_agent.capabilities.watchlist.contracts import (
     CapabilityCommand,
     CapabilityQuery,

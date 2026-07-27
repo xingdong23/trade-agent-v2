@@ -17,7 +17,16 @@ class LSTMRuntimeUnavailable(RuntimeError):
 
 
 class LSTMBackend(Protocol):
-    """PyTorch、Keras 等可选 runtime 应实现的最小专用模型接口。"""
+    """PyTorch、Keras 等可选 runtime 应实现的最小专用模型接口。
+
+    Contract:
+        - 训练输入必须按固定 sequence length 与 feature 维度解释。
+        - 返回值必须是非空二进制 artifact，且可被上层完整持久化。
+
+    Implemented by:
+        生产环境的 PyTorch/Keras runtime adapter
+        测试中注入的 backend fake
+    """
 
     runtime_name: str
     runtime_version: str
@@ -29,11 +38,36 @@ class LSTMBackend(Protocol):
         labels: Sequence[int],
         random_seed: int,
         hyperparameters: Mapping[str, int | float | str | bool],
-    ) -> bytes: ...
+    ) -> bytes:
+        """训练一个候选 LSTM 模型并返回原始 artifact。
+
+        Args:
+            sequences: ``样本 -> 时间步 -> 特征`` 的三层数值序列。
+            labels: 与样本一一对应的二分类标签。
+            random_seed: 训练随机种子，保证可复现。
+            hyperparameters: runtime 自身识别的超参数集合。
+
+        Returns:
+            可持久化的模型二进制内容。
+
+        Raises:
+            ValueError: 输入 shape、标签或超参数不满足 runtime 要求。
+        """
+        ...
 
 
 @dataclass(frozen=True, slots=True)
 class LSTMArtifact:
+    """LSTM 候选模型的可持久化打包结果。
+
+    Attributes:
+        artifact_bytes: 包含头信息与模型二进制内容的最终 artifact。
+        artifact_hash: 对 artifact_bytes 计算得到的稳定摘要。
+        feature_names: 训练时使用的特征名顺序。
+        sequence_length: 每个样本包含的固定时间步数量。
+        evaluation_protocol: 上层评估/发布流程使用的协议版本。
+    """
+
     artifact_bytes: bytes
     artifact_hash: str
     feature_names: tuple[str, ...]

@@ -1,3 +1,5 @@
+"""前后端共享的 CardEnvelope、Schema 和 catalog 协议。"""
+
 from __future__ import annotations
 
 import json
@@ -66,6 +68,14 @@ class CardValidationError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class CardSource:
+    """标识一张卡片背后的稳定领域源。
+
+    Attributes:
+        source_type: 领域对象类型，例如 interaction。
+        source_id: 领域对象的稳定业务主键。
+        version: 领域对象版本号，必须从 1 开始递增。
+    """
+
     source_type: str
     source_id: str
     version: int
@@ -88,6 +98,18 @@ class CardSource:
 
 @dataclass(frozen=True, slots=True)
 class ValueSpec:
+    """描述卡片 JSON 字段的白名单 schema。
+
+    Attributes:
+        kind: 值类型标签，例如 string、mapping 或 sequence。
+        fields: 当 kind=mapping 时允许出现的子字段 schema。
+        required_fields: mapping 中必须存在的字段集合。
+        item_spec: 当 kind=sequence 时每个元素必须满足的 schema。
+        variants: 联合类型允许的多个候选 schema。
+        choices: 当 kind=string 时允许出现的枚举值集合。
+        allow_none: 是否允许值为 null。
+    """
+
     kind: str
     fields: Mapping[str, ValueSpec] = field(default_factory=dict)
     required_fields: frozenset[str] = field(default_factory=frozenset)
@@ -213,6 +235,15 @@ def _union_spec(*variants: ValueSpec, allow_none: bool = False) -> ValueSpec:
 
 @dataclass(frozen=True, slots=True)
 class CardSchema:
+    """注册某一类卡片版本的协议合同。
+
+    Attributes:
+        kind: 卡片种类标识，属于稳定对外契约。
+        schema_version: kind 下的数据 schema 版本。
+        data_spec: data 字段必须满足的 JSON schema 白名单。
+        allowed_actions: 该卡片版本允许暴露的语义动作集合。
+    """
+
     kind: str
     schema_version: int
     data_spec: ValueSpec
@@ -591,6 +622,28 @@ def _validate_iso_datetime(value: str) -> None:
 
 @dataclass(frozen=True, slots=True)
 class CardEnvelope:
+    """前后端之间传输的稳定卡片载荷。
+
+    Attributes:
+        protocol_version: Card wire protocol 版本。
+        card_id: 卡片稳定标识，同一 source 在所有客户端一致。
+        kind: 卡片类型标识。
+        schema_version: kind 对应的数据 schema 版本。
+        revision: 同一 card_id 的单调递增修订号。
+        source: 回溯到领域对象的稳定来源。
+        state: 卡片状态，例如 pending 或 resolved。
+        data: 前端渲染所需的纯 JSON 数据。
+        actions: 当前状态下允许执行的动作集合。
+        payload_hash: 对核心内容计算得到的防篡改摘要。
+        expires_at: 可选过期时间，ISO 8601 字符串。
+        text_fallback: 任何客户端都必须能展示的纯文本降级内容。
+
+    Invariants:
+        - protocol_version 必须等于 CARD_PROTOCOL_VERSION。
+        - revision 与 source.version 只能单调前进，不能回退。
+        - 当 payload_hash 已提供时，它必须与卡片内容严格匹配。
+    """
+
     protocol_version: str
     card_id: str
     kind: str
@@ -674,6 +727,12 @@ class CardEnvelope:
 
 @dataclass(frozen=True, slots=True)
 class CardCatalog:
+    """按 kind/version 注册并校验卡片协议。
+
+    Attributes:
+        _schemas: ``(kind, schema_version)`` 到协议定义的映射。
+    """
+
     _schemas: Mapping[tuple[str, int], CardSchema]
 
     @classmethod
@@ -801,4 +860,26 @@ DEFAULT_CARD_CATALOG = CardCatalog.default()
 
 
 class CardPresenter(Protocol):
-    def present(self, source: object) -> CardEnvelope: ...
+    """把领域对象投影为稳定 CardEnvelope 的展示协议。
+
+    Contract:
+        - 调用方传入的对象必须被实现方识别并转换为已注册的卡片协议。
+        - 返回值必须通过 CardCatalog 校验，且包含可用于降级展示的 text_fallback。
+
+    Implemented by:
+        trade_agent.core.presentation.projection.HitlCardPresenter
+    """
+
+    def present(self, source: object) -> CardEnvelope:
+        """把一个领域对象转换成前端可消费的卡片。
+
+        Args:
+            source: 待展示的领域对象或中间投影对象。
+
+        Returns:
+            满足统一卡片协议的不可变载荷。
+
+        Raises:
+            CardValidationError: 投影结果不满足已注册卡片协议。
+        """
+        ...

@@ -18,7 +18,7 @@ from trade_agent.adapters.sqlite.json_support import payload_hash
 from trade_agent.apps.api import create_app
 from trade_agent.apps.cli import execute
 from trade_agent.apps.container import ApplicationContainer, build_application_container
-from trade_agent.apps.conversation_runtime import (
+from trade_agent.apps.journeys import (
     ResearchJourneyBackend,
     ResearchJourneyResult,
     SecurityCandidate,
@@ -93,8 +93,9 @@ from trade_agent.core.config import AppSettings, AuthenticationSettings, Databas
 from trade_agent.core.hitl import HumanInteraction, InteractionStatus, InteractionType
 from trade_agent.core.llm import JsonValue, LLMMessage, LLMRequest, LLMResponse, ModelRoute
 from trade_agent.core.presentation import CardEnvelope, HitlCardPresenter
+from trade_agent.core.runtime import Intent, IntentClassification
 from trade_agent.core.security import Redactor
-from trade_agent.core.testing import FakeLLMClient
+from trade_agent.core.testing import FakeLLMClient, MappingIntentClassifier
 from trade_agent.core.tools import ToolRequest
 
 NOW = datetime(2026, 7, 27, 9, 30, tzinfo=UTC)
@@ -629,7 +630,22 @@ def test_single_conversation_run_drives_research_scan_plan_reminder_and_review(
         ]
     )
     journey = AcceptanceResearchJourney(llm)
-    container = build_application_container(settings, llm_client=llm, research_journey=journey)
+    classifier = MappingIntentClassifier(
+        {
+            "研究 NVDA 并生成交易计划": IntentClassification(
+                Intent.RESEARCH,
+                "research_to_plan",
+                1.0,
+                (("symbol", "NVDA"),),
+            )
+        }
+    )
+    container = build_application_container(
+        settings,
+        llm_client=llm,
+        research_journey=journey,
+        intent_classifier=classifier,
+    )
     client = TestClient(create_app(settings, container))
     headers = {"X-User-ID": "owner-a"}
 

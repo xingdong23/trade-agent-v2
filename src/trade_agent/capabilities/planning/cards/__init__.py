@@ -1,4 +1,8 @@
-"""交易计划渐进式交互与 artifact 的确定性 Card presenter。"""
+"""Planning capability 到 Card 协议的确定性投影。
+
+同一个计划在不同阶段会产生不同类型的卡片：入口选择、表单、审批和最终 artifact。
+这个模块把这些阶段统一封装成可供 Web/CLI 渲染的 ``CardEnvelope``。
+"""
 
 from __future__ import annotations
 
@@ -19,9 +23,13 @@ _FIELD_LABELS: Mapping[str, str] = {
 
 
 class PlanningCardPresenter:
+    """把计划相关状态投影为前端可消费的卡片。"""
+
     def intent_choice(
         self, interaction_id: str, *, interaction_version: int = 1, revision: int = 1
     ) -> CardEnvelope:
+        """创建“新增什么内容”的入口选择卡。"""
+
         data: dict[str, Any] = {
             "title": "请选择要新增的内容",
             "description": "首版只支持创建美股交易计划, 不支持记录成交或执行真实交易。",
@@ -67,6 +75,8 @@ class PlanningCardPresenter:
         field_errors: Mapping[str, str] | None = None,
         state: str = "pending",
     ) -> CardEnvelope:
+        """把计划草稿投影为用户可编辑的表单卡。"""
+
         errors = field_errors or {}
         fields: list[dict[str, Any]] = [
             _field(
@@ -125,6 +135,8 @@ class PlanningCardPresenter:
     def plan_approval(
         self, plan: TradingPlan, *, revision: int = 1, state: str = "pending"
     ) -> CardEnvelope:
+        """把完整草稿投影为激活审批卡。"""
+
         if plan.status is not PlanStatus.DRAFT:
             raise ValueError("只有 draft 计划可以生成激活审批卡片")
         if plan.missing_fields:
@@ -176,6 +188,8 @@ class PlanningCardPresenter:
         old_revision: int = 2,
         new_revision: int = 1,
     ) -> tuple[CardEnvelope, CardEnvelope]:
+        """在 edit 场景下同时返回旧卡 superseded 与新卡。"""
+
         if new_plan.plan_id != old_plan.plan_id or new_plan.supersedes_version != old_plan.version:
             raise ValueError("edit 必须创建同一计划的新 draft/version")
         old_card = self.plan_approval(old_plan, revision=old_revision, state="superseded")
@@ -186,6 +200,8 @@ class PlanningCardPresenter:
         return old_card, new_card
 
     def plan_artifact(self, plan: TradingPlan, *, revision: int = 1) -> CardEnvelope:
+        """把非草稿计划投影为只读 artifact 卡。"""
+
         if plan.status is PlanStatus.DRAFT:
             raise ValueError("draft 计划必须先经过审批, 不能作为已激活 artifact")
         status_text = {
@@ -239,6 +255,8 @@ class PlanningCardPresenter:
         message: str,
         revision: int = 1,
     ) -> CardEnvelope:
+        """生成一张明确说明“不支持”的提示卡。"""
+
         data: dict[str, Any] = {
             "title": "当前请求不受支持",
             "message": message,

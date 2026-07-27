@@ -17,6 +17,7 @@ from .execution import (
     execute_idempotent_command,
     map_node_error,
 )
+from .intent import ClarificationIntentClassifier, IntentClassification, IntentClassifier
 from .manifest import AgentManifest
 from .subgraph import AgentSubgraph
 
@@ -25,9 +26,12 @@ __all__ = [
     "AgentState",
     "AgentSubgraph",
     "ArtifactReference",
+    "ClarificationIntentClassifier",
     "ContextReference",
     "ErrorSummary",
     "Intent",
+    "IntentClassification",
+    "IntentClassifier",
     "IntentSchema",
     "NodeErrorCode",
     "NodeExecutionError",

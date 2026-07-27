@@ -6,6 +6,8 @@ from typing import TypedDict
 
 
 class Intent(StrEnum):
+    """Supervisor 可路由的顶层 Agent 意图枚举。"""
+
     RESEARCH = "research"
     STRATEGY = "strategy"
     PLANNING = "planning"
@@ -14,6 +16,14 @@ class Intent(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class ArtifactReference:
+    """Checkpoint 中指向持久化业务产物的轻量引用。
+
+    Attributes:
+        artifact_id: Repository 内的稳定产物标识。
+        artifact_type: 产物协议类型，用于恢复时选择 repository/presenter。
+        version: 被引用产物的不可变版本号。
+    """
+
     artifact_id: str
     artifact_type: str
     version: int
@@ -21,7 +31,16 @@ class ArtifactReference:
 
 @dataclass(frozen=True, slots=True)
 class IntentSchema:
-    """经过本地 schema 校验的路由结果, 不保存 LLM 原始响应。"""
+    """经过本地 schema 校验的 Supervisor 路由结果。
+
+    Attributes:
+        intent: 允许进入的顶层 Agent 意图。
+        confidence: 分类置信度，范围由分类 adapter 校验。
+        reason_code: 稳定审计代码，不包含模型原始推理文本。
+
+    Invariants:
+        - 对象不保存 LLM 原始响应，避免 checkpoint 泄漏或膨胀。
+    """
 
     intent: Intent
     confidence: float
@@ -30,7 +49,13 @@ class IntentSchema:
 
 @dataclass(frozen=True, slots=True)
 class ContextReference:
-    """指向 repository 中规范化上下文的轻量引用。"""
+    """Checkpoint 中指向规范化上下文的轻量引用。
+
+    Attributes:
+        reference_id: Repository 内的稳定标识。
+        reference_type: 上下文类型，用于恢复时选择读取器。
+        version: 被引用快照的不可变版本。
+    """
 
     reference_id: str
     reference_type: str
@@ -39,7 +64,16 @@ class ContextReference:
 
 @dataclass(frozen=True, slots=True)
 class ErrorSummary:
-    """适合 checkpoint 的稳定错误摘要, 不携带 provider 原始 payload。"""
+    """适合写入 checkpoint 的稳定错误摘要。
+
+    Attributes:
+        code: 跨 provider 稳定的错误码。
+        message: 已脱敏、可向用户或日志展示的说明。
+        retryable: 调度器是否允许在既定预算内重试。
+
+    Invariants:
+        - 不携带 provider 原始 payload、凭据或响应对象。
+    """
 
     code: str
     message: str
@@ -49,8 +83,24 @@ class ErrorSummary:
 class AgentState(TypedDict, total=False):
     """Supervisor checkpoint schema。
 
-    Evidence、领域 artifact、tool 参数与 HITL payload 必须保存在各自 repository;
-    state 只记录其不可变引用。
+    Attributes:
+        user_id: 已认证 owner 标识，是所有后续资源隔离的根。
+        thread_id: 会话线程标识。
+        run_id: 本次执行标识。
+        message: 当前用户输入，大小受 checkpoint 门禁限制。
+        intent: 顶层路由意图。
+        intent_result: 经过校验的意图分类摘要。
+        context_references: 指向 evidence/context repository 的不可变引用。
+        pending_interaction_id: 当前暂停所等待的 HITL 标识。
+        artifact: 当前主要输出产物引用。
+        error_summary: 可持久化的脱敏错误摘要。
+        event_cursor: 已消费事件序号。
+        selected_agent_id: Supervisor 选择的 Agent manifest ID。
+        policy_decision: Tool 执行前的策略结论。
+
+    Invariants:
+        - Evidence、领域 artifact、Tool 参数与 HITL payload 必须保存在各自 repository。
+        - State 只保存小型编排值和不可变引用，不能充当业务数据库。
     """
 
     user_id: str

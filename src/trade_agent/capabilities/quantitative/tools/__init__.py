@@ -9,25 +9,98 @@ from trade_agent.core.tools import ToolManifest, ToolRequest, ToolResult
 
 
 class QuantitativeToolApplication(Protocol):
-    async def get_prediction(
-        self, arguments: Mapping[str, JsonValue]
-    ) -> Mapping[str, JsonValue]: ...
+    """供量化工具层调用的应用协议。
+
+    Contract:
+        - 每个方法都必须返回可直接序列化的结构化结果, 不在工具层补算业务字段。
+        - 写操作必须通过幂等键保证可恢复重试语义。
+        - 调用方已完成参数 schema 校验, 实现方负责 owner 隔离与业务约束。
+
+    Implemented by:
+        生产量化应用服务与测试 fake application。
+    """
+
+    async def get_prediction(self, arguments: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]:
+        """读取单只证券的已持久化量化预测。
+
+        Args:
+            arguments: 通过工具 schema 校验后的查询参数。
+
+        Returns:
+            可直接序列化的预测结果载荷。
+
+        Raises:
+            LookupError: 对应证券或预测结果不存在时抛出。
+        """
+
+        ...
 
     async def get_quantitative_snapshot(
         self, arguments: Mapping[str, JsonValue]
-    ) -> Mapping[str, JsonValue]: ...
+    ) -> Mapping[str, JsonValue]:
+        """读取单只证券的量化快照、lineage 与缺口信息。
+
+        Args:
+            arguments: 通过工具 schema 校验后的查询参数。
+
+        Returns:
+            可直接序列化的量化快照载荷。
+
+        Raises:
+            LookupError: 对应证券或快照不存在时抛出。
+        """
+
+        ...
 
     async def submit_scan(
         self, arguments: Mapping[str, JsonValue], *, idempotency_key: str
-    ) -> Mapping[str, JsonValue]: ...
+    ) -> Mapping[str, JsonValue]:
+        """提交一次冻结输入的量化扫描任务。
 
-    async def get_scan_status(
-        self, arguments: Mapping[str, JsonValue]
-    ) -> Mapping[str, JsonValue]: ...
+        Args:
+            arguments: 通过工具 schema 校验后的扫描提交参数。
+            idempotency_key: 幂等键, 用于重试时复用同一提交结果。
+
+        Returns:
+            表示已提交任务的结构化结果载荷。
+
+        Raises:
+            ValueError: 参数虽符合 schema 但未满足更细业务约束时抛出。
+        """
+
+        ...
+
+    async def get_scan_status(self, arguments: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]:
+        """读取扫描任务的当前状态与进度。
+
+        Args:
+            arguments: 通过工具 schema 校验后的状态查询参数。
+
+        Returns:
+            可直接序列化的状态与进度载荷。
+
+        Raises:
+            LookupError: 对应扫描任务不存在时抛出。
+        """
+
+        ...
 
     async def list_scan_results(
         self, arguments: Mapping[str, JsonValue]
-    ) -> Mapping[str, JsonValue]: ...
+    ) -> Mapping[str, JsonValue]:
+        """列出指定扫描任务的已持久化结果。
+
+        Args:
+            arguments: 通过工具 schema 校验后的结果查询参数。
+
+        Returns:
+            可直接序列化的扫描结果列表载荷。
+
+        Raises:
+            LookupError: 对应扫描任务不存在或尚无可见结果时抛出。
+        """
+
+        ...
 
 
 _SECURITY_QUERY_SCHEMA: dict[str, JsonValue] = {
@@ -59,6 +132,12 @@ _OBJECT_OUTPUT: dict[str, JsonValue] = {
 
 @dataclass(frozen=True, slots=True)
 class GetPredictionTool:
+    """读取单只证券已持久化量化预测的工具适配器。
+
+    Attributes:
+        application: 实际执行业务查询的量化应用协议实现。
+    """
+
     application: QuantitativeToolApplication
 
     manifest = ToolManifest(
@@ -80,6 +159,12 @@ class GetPredictionTool:
 
 @dataclass(frozen=True, slots=True)
 class GetQuantitativeSnapshotTool:
+    """读取单只证券量化快照与 lineage 的工具适配器。
+
+    Attributes:
+        application: 实际执行业务查询的量化应用协议实现。
+    """
+
     application: QuantitativeToolApplication
 
     manifest = ToolManifest(
@@ -103,6 +188,12 @@ class GetQuantitativeSnapshotTool:
 
 @dataclass(frozen=True, slots=True)
 class SubmitScanTool:
+    """提交冻结输入扫描任务的工具适配器。
+
+    Attributes:
+        application: 实际执行扫描提交的量化应用协议实现。
+    """
+
     application: QuantitativeToolApplication
 
     manifest = ToolManifest(
@@ -155,6 +246,12 @@ class SubmitScanTool:
 
 @dataclass(frozen=True, slots=True)
 class GetScanStatusTool:
+    """读取扫描任务状态与进度的工具适配器。
+
+    Attributes:
+        application: 实际执行状态查询的量化应用协议实现。
+    """
+
     application: QuantitativeToolApplication
 
     manifest = ToolManifest(
@@ -176,6 +273,12 @@ class GetScanStatusTool:
 
 @dataclass(frozen=True, slots=True)
 class ListScanResultsTool:
+    """读取已持久化扫描结果的工具适配器。
+
+    Attributes:
+        application: 实际执行结果查询的量化应用协议实现。
+    """
+
     application: QuantitativeToolApplication
 
     manifest = ToolManifest(

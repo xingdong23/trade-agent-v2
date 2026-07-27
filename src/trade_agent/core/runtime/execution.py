@@ -23,6 +23,15 @@ class NodeErrorCode(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class NodeExecutionError(RuntimeError):
+    """统一表达节点执行失败的稳定错误值对象。
+
+    Attributes:
+        code: 失败类型枚举，供上层决定重试与用户提示。
+        message: 面向调用方的稳定错误文本。
+        retryable: 当前错误是否允许在策略预算内重试。
+        attempts: 触发该错误时已经发生的尝试次数。
+    """
+
     code: NodeErrorCode
     message: str
     retryable: bool
@@ -34,6 +43,13 @@ class NodeExecutionError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class NodeExecutionPolicy:
+    """节点执行的超时与重试预算。
+
+    Attributes:
+        timeout_seconds: 单次操作最大执行时长，单位秒。
+        max_attempts: 允许的总尝试次数，至少为 1。
+    """
+
     timeout_seconds: float = 30.0
     max_attempts: int = 3
 
@@ -43,24 +59,70 @@ class NodeExecutionPolicy:
 
 
 class CommandStore(Protocol):
-    def begin(
-        self, *, owner_id: str, idempotency_key: str, payload_hash: str
-    ) -> CommandReceipt: ...
+    """幂等命令生命周期存储协议。
+
+    Contract:
+        - 同一 ``owner_id + idempotency_key`` 必须稳定映射到同一命令记录。
+        - ``begin`` 与 ``complete`` 必须可安全重放，且不得跨 owner 泄露结果。
+
+    Implemented by:
+        trade_agent.adapters.sqlite.repositories.SQLiteCommandStore
+    """
+
+    def begin(self, *, owner_id: str, idempotency_key: str, payload_hash: str) -> CommandReceipt:
+        """开始一条幂等命令记录。
+
+        Args:
+            owner_id: 命令所属租户或用户标识。
+            idempotency_key: 调用方生成的稳定幂等键。
+            payload_hash: 本次业务输入的规范化摘要。
+
+        Returns:
+            当前命令的 receipt；若命令已存在，可能返回复用记录。
+        """
+        ...
 
     def complete(
         self, *, owner_id: str, command_id: str, result: Mapping[str, JsonValue]
-    ) -> CommandReceipt: ...
+    ) -> CommandReceipt:
+        """把一条命令标记为完成。
+
+        Args:
+            owner_id: 命令所属租户或用户标识。
+            command_id: ``begin`` 返回的稳定命令 ID。
+            result: 需要持久化并可重复返回的 JSON 结果。
+
+        Returns:
+            更新后的 receipt。
+        """
+        ...
 
 
 class CommandReceipt(Protocol):
-    @property
-    def command_id(self) -> str: ...
+    """命令存储向执行器暴露的最小结果视图。
+
+    Contract:
+        - 属性读取必须无副作用。
+        - ``reused`` 为真时，``result`` 应表示已存在命令的已知结果或空值。
+
+    Implemented by:
+        trade_agent.adapters.sqlite.repositories.CommandReceipt
+    """
 
     @property
-    def result(self) -> Mapping[str, JsonValue] | None: ...
+    def command_id(self) -> str:
+        """返回命令的稳定标识。"""
+        ...
 
     @property
-    def reused(self) -> bool: ...
+    def result(self) -> Mapping[str, JsonValue] | None:
+        """返回已持久化结果；命令未完成时可以为空。"""
+        ...
+
+    @property
+    def reused(self) -> bool:
+        """指示本次 receipt 是否复用了既有幂等记录。"""
+        ...
 
 
 class NodeExecutor:

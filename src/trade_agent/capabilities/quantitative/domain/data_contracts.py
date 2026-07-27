@@ -20,6 +20,17 @@ class AdjustmentPolicy(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class MarketScope:
+    """定义量化能力允许覆盖的市场与交易所范围。
+
+    Attributes:
+        market: 稳定市场标识。首版固定为 `US`。
+        exchanges: 允许进入训练和推理流程的美国交易所列表。
+
+    Invariants:
+        - 首版量化能力只支持美股市场。
+        - 交易所范围至少包含一个交易所。
+    """
+
     market: str = "US"
     exchanges: tuple[str, ...] = ("NASDAQ", "NYSE", "AMEX")
 
@@ -32,6 +43,18 @@ class MarketScope:
 
 @dataclass(frozen=True, slots=True)
 class TargetDefinition:
+    """定义一个量化预测目标的标签语义与可用延迟。
+
+    Attributes:
+        target: 预测目标类型, 如收益率、方向或波动率。
+        horizon_trading_days: 预测覆盖的未来交易日数量。
+        label_available_delay_days: 标签在决策时点后需要等待的额外交易日数量。
+
+    Invariants:
+        - 预测周期必须为正整数。
+        - 标签可用延迟不能为负。
+    """
+
     target: PredictionTarget
     horizon_trading_days: int
     label_available_delay_days: int
@@ -43,6 +66,17 @@ class TargetDefinition:
 
 @dataclass(frozen=True, slots=True)
 class DataAvailability:
+    """描述单个数据点从事件发生到可被模型使用的时间边界。
+
+    Attributes:
+        event_time: 数据代表的业务事件发生时间。
+        available_at: 数据对训练或推理流程可见的最早时间。
+
+    Invariants:
+        - 两个时间都必须带时区。
+        - `available_at` 不得早于 `event_time`。
+    """
+
     event_time: datetime
     available_at: datetime
 
@@ -55,6 +89,18 @@ class DataAvailability:
 
 @dataclass(frozen=True, slots=True)
 class TradingSession:
+    """描述一个美股交易日的开闭市时间窗口。
+
+    Attributes:
+        trading_date: 交易日日期。
+        opens_at: 当日开市时间。
+        closes_at: 当日收市时间。
+
+    Invariants:
+        - 开闭市时间必须带时区。
+        - 收市时间必须晚于开市时间。
+    """
+
     trading_date: date
     opens_at: datetime
     closes_at: datetime
@@ -68,6 +114,17 @@ class TradingSession:
 
 @dataclass(frozen=True, slots=True)
 class USTradingCalendar:
+    """提供版本化的美股交易日日历查询。
+
+    Attributes:
+        version: 交易日日历版本标识。
+        timezone: 日历采用的时区名称。
+        sessions: 以交易日为键的交易时段映射。
+
+    Invariants:
+        - `sessions` 中只应包含已配置的美国交易日。
+    """
+
     version: str
     timezone: str
     sessions: Mapping[date, TradingSession]
@@ -81,6 +138,17 @@ class USTradingCalendar:
 
 @dataclass(frozen=True, slots=True)
 class FeatureDefinition:
+    """描述一个可复用特征的定义、来源与计算入口。
+
+    Attributes:
+        name: 特征稳定名称。
+        version: 特征定义版本。
+        category: 特征类别, 例如价格、流动性或基本面。
+        input_fields: 计算该特征所依赖的原始字段集合。
+        lineage: 特征来源或加工链路标识。
+        compute: 从原始字段映射计算该特征值的纯函数。
+    """
+
     name: str
     version: str
     category: str
@@ -91,6 +159,13 @@ class FeatureDefinition:
 
 @dataclass(frozen=True, slots=True)
 class FeatureSet:
+    """将一组特征定义冻结为可复用的版本快照。
+
+    Attributes:
+        version: 特征集合版本标识。
+        definitions: 属于该版本的全部特征定义。
+    """
+
     version: str
     definitions: tuple[FeatureDefinition, ...]
 
@@ -116,12 +191,29 @@ class FeatureRegistry:
 
 @dataclass(frozen=True, slots=True)
 class FeatureVector:
+    """表示一次计算结果中与特征集版本对齐的特征向量。
+
+    Attributes:
+        feature_set_version: 生成该向量所用的特征集版本。
+        values: 特征名到数值的映射, 缺失值可显式为 `None`。
+    """
+
     feature_set_version: str
     values: Mapping[str, float | None]
 
 
 @dataclass(frozen=True, slots=True)
 class FeatureRow:
+    """承载单个交易日原始输入字段及质量元数据。
+
+    Attributes:
+        trading_date: 该行数据对应的交易日。
+        values: 原始字段到数值的映射。
+        suspended: 该证券在当日是否停牌。
+        corporate_action_adjusted: 是否已按要求完成公司行动复权。
+        adjustment_version: 该行采用的复权版本标识。
+    """
+
     trading_date: date
     values: Mapping[str, float | None]
     suspended: bool = False

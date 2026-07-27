@@ -3,6 +3,7 @@
 from .contracts import (
     ToolError,
     ToolErrorCode,
+    ToolExecutionError,
     ToolGateway,
     ToolManifest,
     ToolProtocol,
@@ -20,6 +21,7 @@ __all__ = [
     "SchemaValidationError",
     "ToolError",
     "ToolErrorCode",
+    "ToolExecutionError",
     "ToolGateway",
     "ToolManifest",
     "ToolPolicy",

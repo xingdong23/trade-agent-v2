@@ -13,6 +13,18 @@ class MonitoringAction(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class MonitoringThresholds:
+    """定义生产监控触发路由动作的告警门槛。
+
+    Attributes:
+        min_data_quality: 最低可接受数据质量分数。
+        max_feature_drift: 最大可接受特征漂移。
+        max_prediction_drift: 最大可接受预测分布漂移。
+        max_calibration_error: 最大可接受概率校准误差。
+        min_coverage: 最低可接受预测覆盖率。
+        max_latency_ms: 最大可接受推理延迟, 单位为毫秒。
+        min_labeled_performance: 最低可接受已标注表现分数。
+    """
+
     min_data_quality: float
     max_feature_drift: float
     max_prediction_drift: float
@@ -24,6 +36,23 @@ class MonitoringThresholds:
 
 @dataclass(frozen=True, slots=True)
 class ProductionObservation:
+    """记录一次生产观测窗口内收集到的监控指标。
+
+    Attributes:
+        model_version_id: 被观测模型版本标识。
+        observed_at: 观测时间。
+        data_quality: 数据质量分数。
+        feature_drift: 特征漂移指标。
+        prediction_drift: 预测漂移指标。
+        calibration_error: 概率校准误差。
+        coverage: 有效预测覆盖率。
+        latency_ms: 推理延迟, 单位为毫秒。
+        labeled_performance: 已回填标签后的表现指标; 标签未到齐时可为空。
+
+    Invariants:
+        - `observed_at` 必须带时区。
+    """
+
     model_version_id: str
     observed_at: datetime
     data_quality: float
@@ -41,6 +70,16 @@ class ProductionObservation:
 
 @dataclass(frozen=True, slots=True)
 class MonitoringDecision:
+    """记录监控策略对一次生产观测得出的动作结论。
+
+    Attributes:
+        model_version_id: 被评估模型版本标识。
+        observed_at: 对应观测时间。
+        action: 应执行的路由动作。
+        breaches: 触发动作的门槛名称列表。
+        route_model_version_id: 继续或回退时应路由到的模型版本; 停止时可为空。
+    """
+
     model_version_id: str
     observed_at: datetime
     action: MonitoringAction

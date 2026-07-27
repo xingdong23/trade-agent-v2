@@ -10,6 +10,8 @@ from trade_agent.apps.api import create_app
 from trade_agent.apps.container import ApplicationContainer, build_application_container
 from trade_agent.core.config import AppSettings, AuthenticationSettings, DatabaseSettings
 from trade_agent.core.llm import JsonValue
+from trade_agent.core.runtime import Intent, IntentClassification
+from trade_agent.core.testing import MappingIntentClassifier
 
 
 def _client(tmp_path: Path) -> tuple[TestClient, ApplicationContainer]:
@@ -17,7 +19,18 @@ def _client(tmp_path: Path) -> tuple[TestClient, ApplicationContainer]:
         database=DatabaseSettings(path=tmp_path / "conversation.db"),
         authentication=AuthenticationSettings(mode="development", development_user_id=None),
     )
-    container = build_application_container(settings)
+    classifier = MappingIntentClassifier(
+        {
+            "新增一个交易": IntentClassification(Intent.PLANNING, "planning.choose_operation", 1.0),
+            "我要买 NVDA": IntentClassification(
+                Intent.PLANNING,
+                "planning.create_plan",
+                1.0,
+                (("symbol", "NVDA"),),
+            ),
+        }
+    )
+    container = build_application_container(settings, intent_classifier=classifier)
     return TestClient(create_app(settings, container)), container
 
 
@@ -188,3 +201,32 @@ def test_buy_plan_runs_form_edit_supersede_confirm_and_refresh_recovery(
     tracer = container.tracer
     assert tracer is not None
     assert any(event.event_type == "card.created" for event in tracer.events())
+
+
+def test_runtime_uses_injected_classification_instead_of_message_keywords(tmp_path: Path) -> None:
+    settings = AppSettings(
+        database=DatabaseSettings(path=tmp_path / "injected-routing.db"),
+        authentication=AuthenticationSettings(mode="development", development_user_id=None),
+    )
+    classifier = MappingIntentClassifier(
+        {
+            "任意课程示例文本": IntentClassification(
+                Intent.PLANNING,
+                "planning.create_plan",
+                1.0,
+                (("symbol", "MSFT"),),
+            )
+        }
+    )
+    container = build_application_container(settings, intent_classifier=classifier)
+    client = TestClient(create_app(settings, container))
+
+    response = client.post(
+        "/api/conversations/runs",
+        headers={"X-User-ID": "owner-a"},
+        json={"thread_id": "injected-route", "message": "任意课程示例文本"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["card"]["kind"] == "interaction.form"
+    assert response.json()["card"]["data"]["fields"][0]["value"] == "MSFT"

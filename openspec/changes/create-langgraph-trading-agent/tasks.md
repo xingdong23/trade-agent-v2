@@ -132,3 +132,11 @@
 - [x] 12.6 编写全中文运行与运维文档，说明 SQLite 初始化/backup/restore、本地启动、migration、HITL 待办处理、训练/评测、model 发布、单 worker、美股 provider 配置、故障恢复和已知非目标
 - [x] 12.7 运行 `openspec validate`、完整非 live test suite 和 migration smoke test，记录验证证据及尚未覆盖的 live provider 风险
 - [x] 12.8 完成“新增一个交易”Choice Card 澄清与不支持路径，以及“我要买 NVDA”不能下单提示 -> 合并字段 Form Card -> 字段错误 -> Approval Card edit/supersede -> 幂等 confirm -> TradingPlan Artifact Card 的端到端测试，并覆盖刷新恢复、重复响应、键盘操作和移动端布局
+
+## 13. Agent 中台解耦与课程注释门禁
+
+- [x] 13.1 将自然语言分类抽象为可替换 `IntentClassifier`，运行时只消费结构化 intent、journey ID 与实体，不包含固定业务短语判断
+- [x] 13.2 将启动、HITL subject 和恢复处理统一封装为可注册 `ConversationJourney` 插件，并把 Planning/Research-to-plan 业务编排移出通用会话运行时
+- [x] 13.3 使用类型化 Tool 执行异常替代异常消息关键词解析，确保中台控制流只依赖协议、枚举、类型和注册表
+- [x] 13.4 按中文 Docstring 规范补齐公共模型实体与 Protocol，并增加全仓 AST 架构门禁
+- [x] 13.5 运行格式化、lint、mypy、全量测试、硬编码扫描和 OpenSpec strict validation
