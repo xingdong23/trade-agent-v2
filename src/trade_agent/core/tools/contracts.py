@@ -9,6 +9,50 @@ from trade_agent.core.llm.contracts import JsonValue
 
 
 @dataclass(frozen=True, slots=True)
+class ToolExecutionPrincipal:
+    """由平台认证链路提供的受信执行主体。
+
+    Attributes:
+        owner_id: 当前租户或资源所有者标识。
+        actor_id: 实际触发本次工具调用的主体标识；未显式区分时退化为 ``owner_id``。
+
+    Invariants:
+        - 所有值都来自认证或会话绑定上下文，而不是 LLM 生成参数。
+        - ``resolved_actor_id`` 始终返回非空字符串，供需要 ``actor_id`` 的工具统一使用。
+    """
+
+    owner_id: str
+    actor_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.owner_id.strip():
+            raise ValueError("owner_id 不能为空")
+        if self.actor_id is not None and not self.actor_id.strip():
+            raise ValueError("actor_id 不能为空字符串")
+
+    @property
+    def resolved_actor_id(self) -> str:
+        """返回用于工具执行的稳定 actor 标识。"""
+
+        return self.actor_id if self.actor_id is not None else self.owner_id
+
+
+@dataclass(frozen=True, slots=True)
+class ToolExecutionContext:
+    """一次工具调用的受信上下文。
+
+    Attributes:
+        principal: 经过认证和会话绑定的执行主体。
+
+    Notes:
+        该对象保留为独立上下文层，便于后续附加 trace、审计或会话约束而不修改
+        ``ToolRequest`` 的调用面。
+    """
+
+    principal: ToolExecutionPrincipal
+
+
+@dataclass(frozen=True, slots=True)
 class ToolManifest:
     """一个 Tool 的静态能力与安全声明。
 
@@ -47,6 +91,7 @@ class ToolRequest:
         idempotency_key: 写操作的稳定幂等键。
         agent_id: 发起调用的 Agent manifest ID。
         approval_interaction_id: 满足 HITL 门禁的交互标识。
+        context: 由运行时注入的受信执行主体上下文。
     """
 
     tool_id: str
@@ -54,6 +99,7 @@ class ToolRequest:
     idempotency_key: str | None = None
     agent_id: str | None = None
     approval_interaction_id: str | None = None
+    context: ToolExecutionContext | None = None
 
 
 class ToolErrorCode(StrEnum):
@@ -151,6 +197,8 @@ class ToolGateway(Protocol):
 
     Contract:
         - 实现方必须完成注册查找、Agent 权限、HITL 和 schema 门禁。
+        - 任何 owner/actor 相关身份都必须来自 ``ToolRequest.context`` 等受信上下文，
+          不能直接信任 LLM 生成参数。
         - 所有异常必须归一化为 ``ToolResult``。
 
     Implemented by:

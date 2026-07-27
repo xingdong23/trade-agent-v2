@@ -177,7 +177,13 @@ def test_event_sequence_is_contiguous_and_failed_append_rolls_back(
 
 def test_job_claim_is_atomic_and_recoverable(database: SQLiteDatabase) -> None:
     jobs = SQLiteJobStore(database)
-    jobs.enqueue(owner_id="owner-a", job_id="job-1", job_type="scan", payload={"scan": "s1"})
+    jobs.enqueue(
+        owner_id="owner-a",
+        job_id="job-1",
+        job_type="scan",
+        payload={"scan": "s1"},
+        max_attempts=3,
+    )
 
     claimed = jobs.claim(worker_id="worker-a", lease_seconds=60)
     assert claimed is not None
@@ -200,16 +206,16 @@ def test_job_retry_budget_and_owner_scoped_cancel(database: SQLiteDatabase) -> N
         payload={},
         max_attempts=1,
     )
-    claimed = jobs.claim(worker_id="worker-a")
+    claimed = jobs.claim(worker_id="worker-a", lease_seconds=60)
     assert claimed is not None
     jobs.release(job_id="job-1", worker_id="worker-a", error="temporary failure")
-    assert jobs.claim(worker_id="worker-b") is None
+    assert jobs.claim(worker_id="worker-b", lease_seconds=60) is None
     with pytest.raises(JobLeaseError):
         jobs.cancel(owner_id="owner-b", job_id="job-1")
     with pytest.raises(JobLeaseError):
         jobs.cancel(owner_id="owner-a", job_id="job-1")
 
-    jobs.enqueue(owner_id="owner-a", job_id="job-2", job_type="scan", payload={})
+    jobs.enqueue(owner_id="owner-a", job_id="job-2", job_type="scan", payload={}, max_attempts=3)
     jobs.cancel(owner_id="owner-a", job_id="job-2")
 
 

@@ -319,13 +319,36 @@ class ModelRuntime:
         raise NotImplementedError
 
 
+@dataclass(frozen=True, slots=True)
+class InferencePolicy:
+    """定义并版本化专用模型推理前的数据适用性门禁。
+
+    Attributes:
+        policy_version: 可写入预测 lineage 的稳定策略版本。
+        max_missing_ratio: 允许的最大缺失特征占比。
+
+    Invariants:
+        - 策略版本不能为空。
+        - 缺失率阈值必须位于 0 到 1 之间。
+    """
+
+    policy_version: str
+    max_missing_ratio: float
+
+    def __post_init__(self) -> None:
+        if not self.policy_version.strip():
+            raise ValueError("inference policy_version 不能为空")
+        if not 0.0 <= self.max_missing_ratio <= 1.0:
+            raise ValueError("max_missing_ratio 必须位于 0 到 1 之间")
+
+
 class BatchInferenceService:
     def __init__(
-        self, registry: ModelRegistry, runtime: ModelRuntime, *, max_missing_ratio: float = 0.1
+        self, registry: ModelRegistry, runtime: ModelRuntime, *, policy: InferencePolicy
     ) -> None:
         self._registry = registry
         self._runtime = runtime
-        self._max_missing_ratio = max_missing_ratio
+        self._policy = policy
 
     def predict(self, requests: Sequence[InferenceRequest]) -> tuple[QuantitativePrediction, ...]:
         results: list[QuantitativePrediction] = []
@@ -341,7 +364,7 @@ class BatchInferenceService:
             if request.out_of_distribution:
                 results.append(self._unavailable(request, "输入超出模型适用范围"))
                 continue
-            if request.missing_ratio > self._max_missing_ratio or any(
+            if request.missing_ratio > self._policy.max_missing_ratio or any(
                 value is None for value in request.features.values()
             ):
                 results.append(self._unavailable(request, "feature 缺失超过门槛"))
@@ -366,7 +389,11 @@ class BatchInferenceService:
                     request.feature_snapshot_id,
                     dict(output),
                     {"evaluation_calibration_error": model.evaluation.metrics.calibration_error},
-                    {"market": request.market, "out_of_distribution": False},
+                    {
+                        "inference_policy_version": self._policy.policy_version,
+                        "market": request.market,
+                        "out_of_distribution": False,
+                    },
                 )
             )
         return tuple(results)

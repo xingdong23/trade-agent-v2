@@ -36,7 +36,12 @@ from trade_agent.core.hitl import DefaultHitlService, HumanInteraction, Interact
 from trade_agent.core.llm.contracts import JsonValue
 from trade_agent.core.presentation import CARD_PROTOCOL_VERSION, CardEnvelope, CardSource
 from trade_agent.core.presentation.projection import HitlCardPresenter, stable_card_id
-from trade_agent.core.runtime import AgentState, IntentClassification, IntentClassifier
+from trade_agent.core.runtime import (
+    AgentState,
+    IntentClassification,
+    IntentClassifier,
+    normalize_route_intent,
+)
 
 
 class GraphInvoker(Protocol):
@@ -130,6 +135,7 @@ class ConversationRunService(ConversationRuntimePort):
         event_store: SQLiteEventStore,
         hitl_service: DefaultHitlService,
         intent_classifier: IntentClassifier,
+        unregistered_journey_message: str,
         tracer: StructuredTracer | None = None,
         journey_registry: JourneyRegistry | None = None,
     ) -> None:
@@ -139,6 +145,9 @@ class ConversationRunService(ConversationRuntimePort):
         self._events = event_store
         self._hitl = hitl_service
         self._intent_classifier = intent_classifier
+        self._unregistered_journey_message = unregistered_journey_message.strip()
+        if not self._unregistered_journey_message:
+            raise ValueError("unregistered_journey_message 不能为空")
         self._tracer = tracer or StructuredTracer()
         self._journey_registry = journey_registry or JourneyRegistry()
         self._cards = SQLiteAggregateRepository(database, "cards")
@@ -177,14 +186,29 @@ class ConversationRunService(ConversationRuntimePort):
         self._checkpointer.bind_thread(owner_id=owner_id, thread_id=thread_id)
         self._events.start_run(owner_id=owner_id, run_id=run_id, thread_id=thread_id)
         classification = self._intent_classifier.classify(message=message, owner_id=owner_id)
+        intent_id = normalize_route_intent(classification.intent)
         self.append_event(
             owner_id,
             run_id,
             "run.started",
             {
                 "thread_id": thread_id,
-                "intent": classification.intent.value,
+                "intent": intent_id,
                 "journey_id": classification.journey_id,
+            },
+        )
+        user_message_id = str(uuid4())
+        self.append_event(
+            owner_id,
+            run_id,
+            "message.created",
+            {
+                "thread_id": thread_id,
+                "message": {
+                    "id": user_message_id,
+                    "role": "user",
+                    "content": message,
+                },
             },
         )
         self._graph.invoke(
@@ -202,7 +226,7 @@ class ConversationRunService(ConversationRuntimePort):
             outcome="success",
             attributes={
                 "run_id": run_id,
-                "agent_id": classification.intent.value,
+                "agent_id": intent_id,
                 "journey_id": classification.journey_id,
                 "reason_code": classification.reason_code,
             },
@@ -211,17 +235,26 @@ class ConversationRunService(ConversationRuntimePort):
         if classification.journey_id is not None:
             journey = self._journey_registry.get_conversation_journey(classification.journey_id)
             if journey is not None:
-                return journey.start(
-                    JourneyStartContext(owner_id, thread_id, run_id, classification),
-                    self,
+                return replace(
+                    journey.start(
+                        JourneyStartContext(owner_id, thread_id, run_id, classification),
+                        self,
+                    ),
+                    user_message_id=user_message_id,
                 )
         notice = self.create_unsupported_notice(
             reference_id=run_id,
             unsupported_kind="conversation_intent",
-            message="当前请求没有已注册的业务旅程, 请补充信息或联系管理员配置能力。",
+            message=self._unregistered_journey_message,
         )
         self.publish_card(owner_id, thread_id, run_id, notice, "card.failed")
-        return ConversationRunResult(run_id, thread_id, "unsupported", card=notice)
+        return ConversationRunResult(
+            run_id,
+            thread_id,
+            "unsupported",
+            card=notice,
+            user_message_id=user_message_id,
+        )
 
     def register_conversation_journey(self, journey: ConversationJourney) -> None:
         """注册一个完整的会话旅程插件。"""
@@ -401,7 +434,7 @@ class ConversationRunService(ConversationRuntimePort):
             name: 当前旅程要求的实体名称。
 
         Returns:
-            去除首尾空白并转为大写的实体值。
+            仅去除首尾空白的实体原值；领域规范化由具体 Journey/Capability 负责。
 
         Raises:
             ValueError: 分类器选择了旅程，却没有返回该旅程要求的实体。
@@ -410,7 +443,7 @@ class ConversationRunService(ConversationRuntimePort):
         value = classification.entity(name)
         if value is None or not value.strip():
             raise ValueError(f"journey {classification.journey_id} 缺少实体 {name}")
-        return value.strip().upper()
+        return value.strip()
 
 
 def _interaction_card(interaction: HumanInteraction) -> CardEnvelope:

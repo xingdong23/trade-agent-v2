@@ -4,7 +4,9 @@ from trade_agent.core.llm.contracts import JsonValue
 from trade_agent.core.presentation import (
     CARD_PROTOCOL_VERSION,
     DEFAULT_CARD_CATALOG,
+    CardCatalog,
     CardEnvelope,
+    CardSchema,
     CardSource,
     CardValidationError,
 )
@@ -55,6 +57,7 @@ def _valid_envelope(
     payload_hash: str = "",
     expires_at: str | None = "2026-07-27T10:00:00+00:00",
     text_fallback: str = "Please provide the missing trade plan fields.",
+    catalog: CardCatalog | None = None,
 ) -> CardEnvelope:
     return CardEnvelope(
         protocol_version=protocol_version,
@@ -69,6 +72,7 @@ def _valid_envelope(
         payload_hash=payload_hash,
         expires_at=expires_at,
         text_fallback=text_fallback,
+        catalog=catalog,
     )
 
 
@@ -86,6 +90,33 @@ def test_card_catalog_round_trips_mapping() -> None:
     parsed = CardEnvelope.from_mapping(envelope.to_mapping())
 
     assert parsed == envelope
+
+
+def test_capability_can_extend_catalog_without_modifying_core_registry() -> None:
+    artifact_schema = DEFAULT_CARD_CATALOG.schema_for("artifact.research", 1)
+    custom_catalog = DEFAULT_CARD_CATALOG.extend(
+        (
+            CardSchema(
+                "artifact.lesson",
+                1,
+                artifact_schema.data_spec,
+                frozenset(),
+            ),
+        )
+    )
+    envelope = _valid_envelope(
+        kind="artifact.lesson",
+        state="resolved",
+        data={"title": "课程产物", "summary": "由新 capability 注册"},
+        actions=(),
+        text_fallback="课程产物已生成。",
+        catalog=custom_catalog,
+    )
+
+    parsed = CardEnvelope.from_mapping(envelope.to_mapping(), catalog=custom_catalog)
+
+    assert parsed.kind == "artifact.lesson"
+    assert not DEFAULT_CARD_CATALOG.supports("artifact.lesson", 1)
 
 
 def test_card_catalog_rejects_unknown_kind() -> None:

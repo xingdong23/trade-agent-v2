@@ -22,7 +22,11 @@ from trade_agent.capabilities.watchlist.tools import (
     ValidateWatchlistImportTool,
 )
 from trade_agent.core.llm.contracts import JsonValue
-from trade_agent.core.tools import ToolRequest
+from trade_agent.core.tools import ToolExecutionContext, ToolExecutionPrincipal, ToolRequest
+
+
+def _trusted_context() -> ToolExecutionContext:
+    return ToolExecutionContext(ToolExecutionPrincipal(owner_id="owner-a"))
 
 
 def test_watchlist_tool_manifests_declare_schema_and_safety_metadata() -> None:
@@ -83,7 +87,6 @@ def test_watchlist_import_tools_delegate_to_application_service() -> None:
                 "watchlist.approve_import",
                 {
                     "rows": validated_rows,
-                    "actor_owner_id": "owner-a",
                     "approved": True,
                     "source_type": "manual",
                     "source_reference": "chat-1",
@@ -92,6 +95,7 @@ def test_watchlist_import_tools_delegate_to_application_service() -> None:
                     "notes": {"US:NASDAQ:NVDA": ["用户关注", "等待财报"]},
                 },
                 "import-command-1",
+                context=_trusted_context(),
             )
         )
     )
@@ -123,12 +127,12 @@ def test_watchlist_controlled_writes_require_hitl_idempotency_metadata() -> None
                                 "status": "accepted",
                             }
                         ],
-                        "actor_owner_id": "owner-a",
                         "approved": True,
                         "source_type": "manual",
                         "source_reference": "chat-1",
                         "imported_at": "2026-07-27T08:00:00Z",
                     },
+                    context=_trusted_context(),
                 )
             )
         )
@@ -155,9 +159,13 @@ def test_classification_and_freeze_tools_only_project_application_results() -> N
         "proposed_group_id": "ai",
         "accepted_group_id": "manual",
         "source_reference": "model-output-1",
-        "actor_owner_id": "owner-a",
     }
-    request = ToolRequest("watchlist.accept_classification", arguments, "accept-command-1")
+    request = ToolRequest(
+        "watchlist.accept_classification",
+        arguments,
+        "accept-command-1",
+        context=_trusted_context(),
+    )
     accepted = asyncio.run(accept.handle(request))
     replay = asyncio.run(accept.handle(request))
     assert replay == accepted
@@ -168,6 +176,7 @@ def test_classification_and_freeze_tools_only_project_application_results() -> N
                     "watchlist.accept_classification",
                     {**arguments, "accepted_group_id": "ai"},
                     "accept-command-1",
+                    context=_trusted_context(),
                 )
             )
         )
@@ -181,10 +190,10 @@ def test_classification_and_freeze_tools_only_project_application_results() -> N
             ToolRequest(
                 "watchlist.freeze_universe",
                 {
-                    "actor_owner_id": "owner-a",
                     "created_at": "2026-07-27T08:30:00Z",
                     "group_id": "manual",
                 },
+                context=_trusted_context(),
             )
         )
     )
@@ -223,10 +232,10 @@ def test_strategy_publish_manifest_and_handler_remain_thin() -> None:
                 {
                     "strategy_id": draft.strategy_id,
                     "approved": True,
-                    "actor_id": "owner-a",
                     "payload_hash": draft.content_hash,
                 },
                 "publish-command-1",
+                context=_trusted_context(),
             )
         )
     )
@@ -250,7 +259,6 @@ def test_strategy_publish_rejects_wrong_subject_or_stale_payload_hash() -> None:
     tool = PublishStrategyTool(StrategyPublishingService(StrategyPublisher()), draft)
     common: dict[str, JsonValue] = {
         "approved": True,
-        "actor_id": "owner-a",
         "payload_hash": draft.content_hash,
     }
     with pytest.raises(ValueError, match="strategy_id"):
@@ -260,6 +268,7 @@ def test_strategy_publish_rejects_wrong_subject_or_stale_payload_hash() -> None:
                     "strategy.publish",
                     {**common, "strategy_id": "strategy-other"},
                     "publish-wrong-subject",
+                    context=_trusted_context(),
                 )
             )
         )
@@ -270,6 +279,7 @@ def test_strategy_publish_rejects_wrong_subject_or_stale_payload_hash() -> None:
                     "strategy.publish",
                     {**common, "strategy_id": draft.strategy_id, "payload_hash": "stale"},
                     "publish-stale-hash",
+                    context=_trusted_context(),
                 )
             )
         )

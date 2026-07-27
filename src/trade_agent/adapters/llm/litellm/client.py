@@ -25,6 +25,7 @@ from trade_agent.core.llm import (
     LLMRequest,
     LLMResponse,
     LLMUsage,
+    ModelEndpoint,
 )
 
 
@@ -34,33 +35,34 @@ class LiteLLMRouteConfig:
 
     Attributes:
         logical_route: 上层业务使用的稳定逻辑路由名。
-        model: 首选物理模型标识。
+        endpoint: 首选物理模型端点。
         timeout_seconds: 单次调用超时，单位秒。
         max_tokens: 输出 token 上限。
-        provider: 从主模型推导出的 provider 名称。
         allowed_providers: 本路由批准使用的 provider 集合。
         concurrency_limit: 并发调用上限。
         max_attempts: 单模型的最大重试次数。
         budget_usd: 可选成本预算上限。
-        fallback_models: 当前路由允许尝试的后备物理模型列表。
+        fallback_endpoints: 当前路由允许尝试的后备物理端点列表。
         metadata: 注入 LiteLLM 调用的固定元数据。
     """
 
     logical_route: str
-    model: str
+    endpoint: ModelEndpoint
     timeout_seconds: float
     max_tokens: int
-    provider: str
     allowed_providers: frozenset[str]
-    concurrency_limit: int = 4
-    max_attempts: int = 2
+    concurrency_limit: int
+    max_attempts: int
     budget_usd: float | None = None
-    fallback_models: tuple[str, ...] = ()
+    fallback_endpoints: tuple[ModelEndpoint, ...] = ()
     metadata: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if self.provider not in self.allowed_providers:
+        if self.endpoint.provider not in self.allowed_providers:
             raise ValueError("主模型 provider 未在 route allowlist")
+        for endpoint in self.fallback_endpoints:
+            if endpoint.provider not in self.allowed_providers:
+                raise ValueError("fallback provider 未在 route allowlist")
         if self.max_attempts < 1 or self.concurrency_limit < 1:
             raise ValueError("LiteLLM retry 与 concurrency 必须大于 0")
 
@@ -113,7 +115,7 @@ class LiteLLMClient:
         async with self._semaphores[request.route.name]:
             try:
                 raw = await self._completion(
-                    **self._kwargs(request, route.model, route, stream=True)
+                    **self._kwargs(request, route.endpoint.model, route, stream=True)
                 )
                 async for chunk in raw:
                     text = _chunk_text(chunk)
@@ -133,12 +135,11 @@ class LiteLLMClient:
     async def _complete_with_policy(
         self, request: LLMRequest, route: LiteLLMRouteConfig
     ) -> LLMResponse:
-        models = (route.model, *route.fallback_models)
+        endpoints = (route.endpoint, *route.fallback_endpoints)
         attempts = 0
         last_error: LLMError | None = None
-        for model in models:
-            provider = _provider(model)
-            if provider not in route.allowed_providers:
+        for endpoint in endpoints:
+            if endpoint.provider not in route.allowed_providers:
                 raise LLMError(
                     LLMErrorCode.PROVIDER_NOT_ALLOWED,
                     "fallback provider 未获批准",
@@ -150,7 +151,7 @@ class LiteLLMClient:
                 self._check_budget(request.route.name, route)
                 try:
                     raw = await self._completion(
-                        **self._kwargs(request, model, route, stream=False)
+                        **self._kwargs(request, endpoint.model, route, stream=False)
                     )
                     response = _normalize_response(raw)
                     self._record_cost(request.route.name, route, response.usage)
@@ -242,10 +243,6 @@ class LiteLLMClient:
 
 
 LiteLLMClientScaffold = LiteLLMClient
-
-
-def _provider(model: str) -> str:
-    return model.split("/", maxsplit=1)[0] if "/" in model else "unknown"
 
 
 def _normalize_response(raw: Any) -> LLMResponse:

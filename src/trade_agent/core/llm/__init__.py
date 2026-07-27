@@ -9,6 +9,7 @@ from .contracts import (
     LLMRequest,
     LLMResponse,
     LLMUsage,
+    ModelEndpoint,
     ModelRoute,
     StructuredResponseValidator,
 )
@@ -22,6 +23,7 @@ __all__ = [
     "LLMRequest",
     "LLMResponse",
     "LLMUsage",
+    "ModelEndpoint",
     "ModelRoute",
     "StructuredResponseValidator",
 ]

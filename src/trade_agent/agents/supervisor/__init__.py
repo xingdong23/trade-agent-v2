@@ -11,9 +11,9 @@ from trade_agent.agents.planning import MANIFEST as PLANNING_AGENT
 from trade_agent.agents.research import MANIFEST as RESEARCH_AGENT
 from trade_agent.agents.strategy import MANIFEST as STRATEGY_AGENT
 from trade_agent.core.llm import ModelRoute
-from trade_agent.core.runtime import AgentManifest
+from trade_agent.core.runtime import AgentManifest, AgentRouteRegistry
 
-from .prompt import PROMPT_ID, PROMPT_VERSION, SYSTEM_PROMPT
+from .prompt import PROMPT_ID, PROMPT_VERSION, build_system_prompt
 
 MANIFEST = AgentManifest(
     agent_id="supervisor",
@@ -27,5 +27,7 @@ MANIFEST = AgentManifest(
 
 # 这是当前系统中真正承接业务的 Agent 白名单。
 BUSINESS_AGENTS = (RESEARCH_AGENT, STRATEGY_AGENT, PLANNING_AGENT)
+ROUTE_REGISTRY = AgentRouteRegistry.from_manifests(BUSINESS_AGENTS)
+SYSTEM_PROMPT = build_system_prompt(BUSINESS_AGENTS)
 
-__all__ = ["BUSINESS_AGENTS", "MANIFEST", "SYSTEM_PROMPT"]
+__all__ = ["BUSINESS_AGENTS", "MANIFEST", "ROUTE_REGISTRY", "SYSTEM_PROMPT"]

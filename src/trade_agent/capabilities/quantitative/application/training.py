@@ -126,23 +126,23 @@ class TrainingExample:
     Attributes:
         sample_id: 样本稳定标识。
         features: 用于训练的数值特征映射。
-        label: 二分类方向标签, 仅允许 0 或 1。
+        label: 由当前 `ModelTaskSpec.label_schema` 解释的有限数值标签。
 
     Invariants:
         - `sample_id` 不能为空。
         - 特征映射不能为空, 且不允许 NaN 或无穷值。
-        - 首版方向预测标签只能是 0 或 1。
+        - 标签必须是有限数值；具体取值范围由任务 spec 校验。
     """
 
     sample_id: str
     features: Mapping[str, float]
-    label: int
+    label: float
 
     def __post_init__(self) -> None:
         if not self.sample_id:
             raise ValueError("训练样本必须包含 sample_id")
-        if self.label not in (0, 1):
-            raise ValueError("首版方向预测 label 只能是 0 或 1")
+        if not math.isfinite(float(self.label)):
+            raise ValueError("训练 label 不允许 NaN 或无穷值")
         if not self.features:
             raise ValueError("训练样本必须包含 feature")
         if any(not math.isfinite(value) for value in self.features.values()):
@@ -230,9 +230,9 @@ class DeterministicRuleBenchmark:
     """
 
     feature_name: str
-    threshold: float = 0.0
-    positive_probability: float = 0.75
-    negative_probability: float = 0.25
+    threshold: float
+    positive_probability: float
+    negative_probability: float
     algorithm: TrainingAlgorithm = TrainingAlgorithm.DETERMINISTIC_RULE
 
     def predict(self, examples: Sequence[TrainingExample]) -> tuple[float, ...]:
@@ -265,6 +265,7 @@ class StatisticalBenchmark:
     def fit(cls, examples: Sequence[TrainingExample]) -> StatisticalBenchmark:
         if not examples:
             raise ValueError("统计 benchmark 至少需要一个训练样本")
+        _binary_labels(tuple(example.label for example in examples))
         positive = sum(example.label for example in examples)
         return cls((positive + 1.0) / (len(examples) + 2.0))
 
@@ -286,13 +287,12 @@ def evaluate_benchmark(
 
 
 def classification_metrics(
-    labels: Sequence[int], probabilities: Sequence[float]
+    labels: Sequence[float], probabilities: Sequence[float]
 ) -> BenchmarkMetrics:
     if not labels or len(labels) != len(probabilities):
         raise ValueError("label 与 probability 必须非空且长度一致")
     clipped = tuple(min(max(float(value), 1e-15), 1.0 - 1e-15) for value in probabilities)
-    if any(label not in (0, 1) for label in labels):
-        raise ValueError("分类指标只接受二分类 label")
+    _binary_labels(labels)
     count = len(labels)
     accuracy = sum(
         (probability >= 0.5) == bool(label)
@@ -322,7 +322,7 @@ class EvaluationMetrics:
 
     Invariants:
         - 指标值不允许 NaN 或无穷值。
-        - `protocol_version` 必须等于当前统一评测协议版本。
+        - `protocol_version` 必须显式提供且不能为空。
         - 校准误差和推理延迟不能为负。
     """
 
@@ -343,15 +343,15 @@ class EvaluationMetrics:
         )
         if any(not math.isfinite(value) for value in values):
             raise ValueError("评测指标不允许 NaN 或无穷值")
-        if self.protocol_version != EVALUATION_PROTOCOL_VERSION:
-            raise ValueError("候选模型必须使用当前统一评测协议")
+        if not self.protocol_version.strip():
+            raise ValueError("评测协议版本不能为空")
         if self.calibration_error < 0 or self.inference_latency_ms < 0:
             raise ValueError("校准误差和 inference 延迟不能为负")
 
 
 @dataclass(frozen=True, slots=True)
-class LSTMReleaseThresholds:
-    """定义 LSTM 相对 LightGBM 基线的发布改进门槛。
+class CandidateReleaseThresholds:
+    """定义任意候选模型相对当前基线的发布改进门槛。
 
     Attributes:
         min_quality_improvement: 质量分数必须超过的最小改善量。
@@ -381,14 +381,14 @@ class LSTMReleaseThresholds:
             )
             < 0
         ):
-            raise ValueError("LSTM 发布门槛改善量不能为负")
+            raise ValueError("候选模型发布门槛改善量不能为负")
         if self.max_latency_ms <= 0:
-            raise ValueError("LSTM 最大 inference 延迟必须为正")
+            raise ValueError("候选模型最大 inference 延迟必须为正")
 
 
 @dataclass(frozen=True, slots=True)
 class ReleaseGateDecision:
-    """给出候选 LSTM 是否可提请发布审批的门禁结论。
+    """给出候选模型是否可提请发布审批的门禁结论。
 
     Attributes:
         may_request_release: 是否满足提请发布审批的前置条件。
@@ -399,34 +399,36 @@ class ReleaseGateDecision:
     reasons: tuple[str, ...]
 
 
-def assess_lstm_release(
+def assess_candidate_release(
     *,
     candidate: EvaluationMetrics,
-    lightgbm_baseline: EvaluationMetrics,
-    thresholds: LSTMReleaseThresholds,
+    incumbent: EvaluationMetrics,
+    thresholds: CandidateReleaseThresholds,
 ) -> ReleaseGateDecision:
     """所有门槛均须严格超过; 该结果只允许提请审批, 不代表已发布。"""
 
+    if candidate.protocol_version != incumbent.protocol_version:
+        raise ValueError("候选模型与基线必须使用相同评测协议")
+
     checks = (
         (
-            candidate.quality_score
-            > lightgbm_baseline.quality_score + thresholds.min_quality_improvement,
-            "样本外预测质量未严格超过 LightGBM 门槛",
+            candidate.quality_score > incumbent.quality_score + thresholds.min_quality_improvement,
+            "样本外预测质量未严格超过当前基线门槛",
         ),
         (
             candidate.calibration_error
-            < lightgbm_baseline.calibration_error - thresholds.min_calibration_improvement,
-            "概率校准未严格超过 LightGBM 门槛",
+            < incumbent.calibration_error - thresholds.min_calibration_improvement,
+            "概率校准未严格超过当前基线门槛",
         ),
         (
             candidate.stability_score
-            > lightgbm_baseline.stability_score + thresholds.min_stability_improvement,
-            "稳定性未严格超过 LightGBM 门槛",
+            > incumbent.stability_score + thresholds.min_stability_improvement,
+            "稳定性未严格超过当前基线门槛",
         ),
         (
             candidate.net_return_after_cost
-            > lightgbm_baseline.net_return_after_cost + thresholds.min_net_return_improvement,
-            "交易成本后指标未严格超过 LightGBM 门槛",
+            > incumbent.net_return_after_cost + thresholds.min_net_return_improvement,
+            "交易成本后指标未严格超过当前基线门槛",
         ),
         (candidate.inference_latency_ms < thresholds.max_latency_ms, "inference 延迟未满足门槛"),
     )
@@ -449,3 +451,8 @@ def _canonical_json(value: object) -> bytes:
 
 def _is_sha256(value: str) -> bool:
     return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
+
+
+def _binary_labels(labels: Sequence[float]) -> None:
+    if any(float(label) not in (0.0, 1.0) for label in labels):
+        raise ValueError("分类指标和概率 benchmark 只接受二分类 label")

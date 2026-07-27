@@ -9,7 +9,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
-EVALUATION_PROTOCOL_VERSION = "quant-evaluation.v1"
+from trade_agent.capabilities.quantitative.contracts import ModelArtifactLineage, ModelTaskSpec
 
 
 class LSTMRuntimeUnavailable(RuntimeError):
@@ -35,7 +35,8 @@ class LSTMBackend(Protocol):
         self,
         *,
         sequences: Sequence[Sequence[Sequence[float]]],
-        labels: Sequence[int],
+        labels: Sequence[float],
+        task_spec: ModelTaskSpec,
         random_seed: int,
         hyperparameters: Mapping[str, int | float | str | bool],
     ) -> bytes:
@@ -43,7 +44,8 @@ class LSTMBackend(Protocol):
 
         Args:
             sequences: ``样本 -> 时间步 -> 特征`` 的三层数值序列。
-            labels: 与样本一一对应的二分类标签。
+            labels: 与样本一一对应、由 task_spec 校验的数值标签。
+            task_spec: target、label schema、输出和评测协议契约。
             random_seed: 训练随机种子，保证可复现。
             hyperparameters: runtime 自身识别的超参数集合。
 
@@ -66,13 +68,17 @@ class LSTMArtifact:
         feature_names: 训练时使用的特征名顺序。
         sequence_length: 每个样本包含的固定时间步数量。
         evaluation_protocol: 上层评估/发布流程使用的协议版本。
+        task_spec: 训练目标、周期、标签和输出契约。
+        lineage: 训练任务、数据、特征与代码版本来源。
     """
 
     artifact_bytes: bytes
     artifact_hash: str
     feature_names: tuple[str, ...]
     sequence_length: int
-    evaluation_protocol: str = EVALUATION_PROTOCOL_VERSION
+    evaluation_protocol: str
+    task_spec: ModelTaskSpec
+    lineage: ModelArtifactLineage
 
 
 class LSTMCandidateTrainer:
@@ -86,29 +92,47 @@ class LSTMCandidateTrainer:
         *,
         feature_names: Sequence[str],
         sequences: Sequence[Sequence[Sequence[float]]],
-        labels: Sequence[int],
+        labels: Sequence[float],
+        task_spec: ModelTaskSpec,
+        lineage: ModelArtifactLineage,
         random_seed: int,
         hyperparameters: Mapping[str, int | float | str | bool],
     ) -> LSTMArtifact:
         if self._backend is None:
             raise LSTMRuntimeUnavailable("LSTM 是可选候选模型, 当前未配置专用训练 runtime")
-        sequence_length = _validate_sequences(feature_names, sequences, labels)
+        sequence_length = _validate_sequences(feature_names, sequences, labels, task_spec)
         model_bytes = self._backend.train(
             sequences=sequences,
             labels=labels,
+            task_spec=task_spec,
             random_seed=random_seed,
             hyperparameters=hyperparameters,
         )
         if not model_bytes:
             raise ValueError("LSTM runtime 返回了空 model artifact")
         header = {
-            "evaluation_protocol": EVALUATION_PROTOCOL_VERSION,
+            "evaluation_protocol": task_spec.evaluation_protocol,
             "feature_names": list(feature_names),
             "model_hash": hashlib.sha256(model_bytes).hexdigest(),
+            "lineage": {
+                "code_version": lineage.code_version,
+                "data_snapshot_id": lineage.data_snapshot_id,
+                "feature_set_version": lineage.feature_set_version,
+                "reproducibility_key": lineage.reproducibility_key,
+                "training_job_id": lineage.training_job_id,
+            },
             "random_seed": random_seed,
             "runtime": self._backend.runtime_name,
             "runtime_version": self._backend.runtime_version,
             "sequence_length": sequence_length,
+            "task": {
+                "evaluation_protocol": task_spec.evaluation_protocol,
+                "horizon": task_spec.horizon,
+                "label_schema_id": task_spec.label_schema.schema_id,
+                "output_name": task_spec.output_name,
+                "target": task_spec.target,
+                "task_type": task_spec.task_type.value,
+            },
         }
         encoded_header = json.dumps(
             header,
@@ -123,20 +147,23 @@ class LSTMCandidateTrainer:
             hashlib.sha256(artifact_bytes).hexdigest(),
             tuple(feature_names),
             sequence_length,
+            task_spec.evaluation_protocol,
+            task_spec,
+            lineage,
         )
 
 
 def _validate_sequences(
     feature_names: Sequence[str],
     sequences: Sequence[Sequence[Sequence[float]]],
-    labels: Sequence[int],
+    labels: Sequence[float],
+    task_spec: ModelTaskSpec,
 ) -> int:
     if not feature_names or len(set(feature_names)) != len(feature_names):
         raise ValueError("LSTM feature name 必须非空且唯一")
     if not sequences or len(sequences) != len(labels):
         raise ValueError("LSTM sequence 与 label 必须非空且数量一致")
-    if any(label not in (0, 1) for label in labels):
-        raise ValueError("LSTM label 只能是 0 或 1")
+    task_spec.label_schema.validate(labels, purpose="LSTM 训练")
     sequence_length = len(sequences[0])
     if sequence_length < 1 or any(len(sequence) != sequence_length for sequence in sequences):
         raise ValueError("LSTM sequence 长度必须固定且为正")

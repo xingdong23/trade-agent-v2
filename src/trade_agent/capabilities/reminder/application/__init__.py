@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 
 from trade_agent.capabilities.reminder.contracts import (
@@ -28,8 +28,11 @@ from trade_agent.core.llm.contracts import JsonValue
 
 
 class ReminderApplication:
-    def __init__(self, repository: ReminderRepository) -> None:
+    def __init__(self, repository: ReminderRepository, *, execution_disclaimer: str) -> None:
+        if not execution_disclaimer.strip():
+            raise ValueError("reminder execution_disclaimer 不能为空")
         self._repository = repository
+        self._execution_disclaimer = execution_disclaimer
 
     async def execute(self, command: CapabilityCommand) -> CapabilityResult:
         if command.command_id == "reminder.create":
@@ -46,7 +49,7 @@ class ReminderApplication:
         rule = self._repository.get_rule(owner_id, reminder_id)
         if rule is None:
             raise LookupError("reminder 不存在或不属于当前 owner")
-        return _result(rule)
+        return _result(rule, execution_disclaimer=self._execution_disclaimer)
 
     def _create(self, payload: Mapping[str, JsonValue]) -> CapabilityResult:
         idempotency_key = _string(payload, "idempotency_key")
@@ -70,7 +73,7 @@ class ReminderApplication:
         saved = self._repository.save_rule(
             rule, expected_version=0, idempotency_key=idempotency_key
         )
-        return _result(saved)
+        return _result(saved, execution_disclaimer=self._execution_disclaimer)
 
     def _set_status(self, payload: Mapping[str, JsonValue]) -> CapabilityResult:
         owner_id = _string(payload, "owner_id")
@@ -86,13 +89,52 @@ class ReminderApplication:
             payload_hash=_string(payload, "payload_hash"),
         )
         if updated is current:
-            return _result(current)
+            return _result(current, execution_disclaimer=self._execution_disclaimer)
         saved = self._repository.save_rule(
             updated,
             expected_version=current.version,
             idempotency_key=_string(payload, "idempotency_key"),
         )
-        return _result(saved)
+        return _result(saved, execution_disclaimer=self._execution_disclaimer)
+
+
+@dataclass(frozen=True, slots=True)
+class ReminderDeliveryPolicy:
+    """定义提醒通知模板、重试预算和退避计划。
+
+    Attributes:
+        policy_version: 可写入通知 payload 的稳定策略版本。
+        template_id: Notification provider 使用的模板标识。
+        max_attempts: 单个 trigger 的最大投递尝试次数。
+        retry_delays: 每次可重试失败后的等待秒数。
+        unavailable_error: provider 未返回错误文本时保存的稳定错误说明。
+        trigger_message: 创建提醒触发时使用的用户可见文案。
+    """
+
+    policy_version: str
+    template_id: str
+    max_attempts: int
+    retry_delays: tuple[float, ...]
+    unavailable_error: str
+    trigger_message: str
+
+    def __post_init__(self) -> None:
+        if any(
+            not value.strip()
+            for value in (
+                self.policy_version,
+                self.template_id,
+                self.unavailable_error,
+                self.trigger_message,
+            )
+        ):
+            raise ValueError("reminder delivery policy 标识与错误说明不能为空")
+        if self.max_attempts < 1:
+            raise ValueError("notification delivery 至少尝试一次")
+        if len(self.retry_delays) != self.max_attempts - 1:
+            raise ValueError("retry delay 数量必须与重试预算一致")
+        if any(delay < 0 for delay in self.retry_delays):
+            raise ValueError("retry delay 不能为负数")
 
 
 class ReminderWorker:
@@ -104,19 +146,13 @@ class ReminderWorker:
         observations: ReminderObservationProvider,
         notifications: NotificationProvider,
         *,
-        max_delivery_attempts: int = 3,
-        retry_delays: tuple[float, ...] = (0.0, 0.0),
+        delivery_policy: ReminderDeliveryPolicy,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
-        if max_delivery_attempts < 1:
-            raise ValueError("notification delivery 至少尝试一次")
-        if len(retry_delays) < max_delivery_attempts - 1:
-            raise ValueError("retry delay 数量不足")
         self._repository = repository
         self._observations = observations
         self._notifications = notifications
-        self._max_delivery_attempts = max_delivery_attempts
-        self._retry_delays = retry_delays
+        self._delivery_policy = delivery_policy
         self._sleep = sleep
 
     async def run_once(self, *, now: datetime) -> tuple[ReminderTrigger, ...]:
@@ -138,7 +174,11 @@ class ReminderWorker:
             self._repository.save_observation(rule.reminder_id, rule.version, observation)
             if not matched:
                 continue
-            trigger = build_trigger(rule, observation)
+            trigger = build_trigger(
+                rule,
+                observation,
+                message=self._delivery_policy.trigger_message,
+            )
             if not self._repository.record_trigger(trigger):
                 continue
             delivered = await self._deliver(rule, trigger)
@@ -148,19 +188,20 @@ class ReminderWorker:
     async def _deliver(self, rule: ReminderRule, trigger: ReminderTrigger) -> ReminderTrigger:
         last_error: str | None = None
         attempts = 0
-        for attempt in range(1, self._max_delivery_attempts + 1):
+        for attempt in range(1, self._delivery_policy.max_attempts + 1):
             attempts = attempt
             try:
                 delivery_reference = await self._notifications.deliver(
                     recipient_id=rule.owner_id,
                     channel=rule.notification_channel,
-                    template_id="reminder.triggered.v1",
+                    template_id=self._delivery_policy.template_id,
                     payload={
                         "reminder_id": rule.reminder_id,
                         "plan_id": rule.plan_id,
                         "trigger_id": trigger.trigger_id,
                         "message": trigger.message,
                         "indicates_execution": False,
+                        "delivery_policy_version": self._delivery_policy.policy_version,
                     },
                     idempotency_key=trigger.trigger_id,
                 )
@@ -168,8 +209,8 @@ class ReminderWorker:
                 last_error = str(exc) or type(exc).__name__
                 if not exc.retryable:
                     break
-                if attempt < self._max_delivery_attempts:
-                    await self._sleep(self._retry_delays[attempt - 1])
+                if attempt < self._delivery_policy.max_attempts:
+                    await self._sleep(self._delivery_policy.retry_delays[attempt - 1])
                 continue
             return replace(
                 trigger,
@@ -181,11 +222,11 @@ class ReminderWorker:
             trigger,
             delivery_status=DeliveryStatus.FAILED,
             delivery_attempts=attempts,
-            delivery_error=last_error or "notification unavailable",
+            delivery_error=last_error or self._delivery_policy.unavailable_error,
         )
 
 
-def _result(rule: ReminderRule) -> CapabilityResult:
+def _result(rule: ReminderRule, *, execution_disclaimer: str) -> CapabilityResult:
     return CapabilityResult(
         rule.reminder_id,
         rule.version,
@@ -201,7 +242,7 @@ def _result(rule: ReminderRule) -> CapabilityResult:
             "cooldown_seconds": int(rule.cooldown.total_seconds()),
             "approved_by": rule.approved_by,
             "approved_payload_hash": rule.approved_payload_hash,
-            "execution_disclaimer": "提醒仅表示条件观察与通知 / 不表示下单或成交。",
+            "execution_disclaimer": execution_disclaimer,
         },
     )
 
@@ -227,4 +268,4 @@ def _non_negative_integer(payload: Mapping[str, JsonValue], key: str) -> int:
     return value
 
 
-__all__ = ["ReminderApplication", "ReminderWorker"]
+__all__ = ["ReminderApplication", "ReminderDeliveryPolicy", "ReminderWorker"]

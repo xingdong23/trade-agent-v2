@@ -21,6 +21,21 @@ class NodeErrorCode(StrEnum):
     INTERNAL = "internal_error"
 
 
+_DEFAULT_ERROR_CODE_MAP: Mapping[str, NodeErrorCode] = {
+    "timeout": NodeErrorCode.TIMEOUT,
+    "rate_limited": NodeErrorCode.PROVIDER_RATE_LIMITED,
+    "provider_rate_limited": NodeErrorCode.PROVIDER_RATE_LIMITED,
+    "unavailable": NodeErrorCode.PROVIDER_UNAVAILABLE,
+    "provider_unavailable": NodeErrorCode.PROVIDER_UNAVAILABLE,
+    "unauthorized": NodeErrorCode.PROVIDER_UNAUTHORIZED,
+    "authentication_error": NodeErrorCode.PROVIDER_UNAUTHORIZED,
+    "invalid_input": NodeErrorCode.INVALID_RESPONSE,
+    "invalid_output": NodeErrorCode.INVALID_RESPONSE,
+    "invalid_request": NodeErrorCode.INVALID_RESPONSE,
+    "invalid_response": NodeErrorCode.INVALID_RESPONSE,
+}
+
+
 @dataclass(frozen=True, slots=True)
 class NodeExecutionError(RuntimeError):
     """统一表达节点执行失败的稳定错误值对象。
@@ -50,8 +65,8 @@ class NodeExecutionPolicy:
         max_attempts: 允许的总尝试次数，至少为 1。
     """
 
-    timeout_seconds: float = 30.0
-    max_attempts: int = 3
+    timeout_seconds: float
+    max_attempts: int
 
     def __post_init__(self) -> None:
         if self.timeout_seconds <= 0 or self.max_attempts < 1:
@@ -176,24 +191,45 @@ async def execute_idempotent_command(
     return completed_result if isinstance(completed_result, Mapping) else value
 
 
-def map_node_error(error: Exception, *, attempts: int) -> NodeExecutionError:
+def map_node_error(
+    error: Exception,
+    *,
+    attempts: int,
+    code_map: Mapping[str, NodeErrorCode] = _DEFAULT_ERROR_CODE_MAP,
+) -> NodeExecutionError:
+    """仅按注册的稳定错误码映射节点失败。
+
+    Args:
+        error: Provider、Tool 或 LLM adapter 抛出的类型化异常。
+        attempts: 当前已经执行的尝试次数。
+        code_map: 稳定外部错误码到节点错误码的精确映射表。
+
+    Returns:
+        已脱敏且可由调度器处理的节点执行错误。
+
+    Notes:
+        未注册错误码一律视为内部错误。本函数绝不解析异常消息，也不使用子串
+        匹配决定重试或控制流。
+    """
+
     code_value = str(getattr(error, "code", "")).casefold()
     retryable = bool(getattr(error, "retryable", False))
-    if "rate" in code_value:
+    mapped = code_map.get(code_value)
+    if mapped is NodeErrorCode.PROVIDER_RATE_LIMITED:
         return NodeExecutionError(
             NodeErrorCode.PROVIDER_RATE_LIMITED, "provider 请求受限", retryable, attempts
         )
-    if "timeout" in code_value:
+    if mapped is NodeErrorCode.TIMEOUT:
         return NodeExecutionError(NodeErrorCode.TIMEOUT, "provider 调用超时", retryable, attempts)
-    if "unavailable" in code_value:
+    if mapped is NodeErrorCode.PROVIDER_UNAVAILABLE:
         return NodeExecutionError(
             NodeErrorCode.PROVIDER_UNAVAILABLE, "provider 暂不可用", retryable, attempts
         )
-    if "unauthorized" in code_value:
+    if mapped is NodeErrorCode.PROVIDER_UNAUTHORIZED:
         return NodeExecutionError(
             NodeErrorCode.PROVIDER_UNAUTHORIZED, "provider 认证失败", False, attempts
         )
-    if "invalid" in code_value:
+    if mapped is NodeErrorCode.INVALID_RESPONSE:
         return NodeExecutionError(
             NodeErrorCode.INVALID_RESPONSE, "provider 返回无效响应", False, attempts
         )

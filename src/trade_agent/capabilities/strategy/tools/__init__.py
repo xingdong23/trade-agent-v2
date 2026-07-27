@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from trade_agent.capabilities.strategy.application import StrategyPublishingService
 from trade_agent.capabilities.strategy.contracts import StrategyDraft
 from trade_agent.core.tools import ToolManifest, ToolRequest, ToolResult
+from trade_agent.core.tools.identity import bind_trusted_identity, identity_fields_for_manifest
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +45,10 @@ class PublishStrategyTool:
     )
 
     async def handle(self, request: ToolRequest) -> ToolResult:
+        request = bind_trusted_identity(
+            request,
+            identity_fields=identity_fields_for_manifest(self.manifest),
+        )
         if request.tool_id != self.manifest.tool_id:
             raise ValueError("tool id 与 handler 不匹配")
         if request.idempotency_key is None or not request.idempotency_key.strip():

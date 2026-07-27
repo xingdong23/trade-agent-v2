@@ -9,6 +9,7 @@ from typing import Any, cast
 
 import pytest
 
+from trade_agent.apps.journeys import planning_presenter_config_from_settings
 from trade_agent.capabilities.planning.application import PlanDraftRequest, PlanningService
 from trade_agent.capabilities.planning.cards import PlanningCardPresenter
 from trade_agent.capabilities.planning.contracts import PlanLineage
@@ -17,11 +18,16 @@ from trade_agent.capabilities.planning.tools import (
     RecordPlanningReviewTool,
     TransitionPlanTool,
 )
+from trade_agent.core.config.settings import PlanningJourneySettings
 from trade_agent.core.llm.contracts import JsonValue
 from trade_agent.core.presentation import DEFAULT_CARD_CATALOG, CardEnvelope
-from trade_agent.core.tools import ToolRequest
+from trade_agent.core.tools import ToolExecutionContext, ToolExecutionPrincipal, ToolRequest
 
 NOW = datetime(2026, 7, 27, 9, 30, tzinfo=UTC)
+
+
+def _trusted_context() -> ToolExecutionContext:
+    return ToolExecutionContext(ToolExecutionPrincipal(owner_id="owner-a"))
 
 
 def _lineage() -> PlanLineage:
@@ -127,8 +133,13 @@ def test_tools_delegate_draft_revision_activation_and_require_hitl_metadata() ->
         create.handle(
             ToolRequest(
                 "planning.create_plan_draft",
-                _draft_arguments(complete=False),
+                {
+                    key: value
+                    for key, value in _draft_arguments(complete=False).items()
+                    if key != "owner_id"
+                },
                 idempotency_key="draft-1",
+                context=_trusted_context(),
             )
         )
     )
@@ -146,8 +157,13 @@ def test_tools_delegate_draft_revision_activation_and_require_hitl_metadata() ->
         create.handle(
             ToolRequest(
                 "planning.create_plan_draft",
-                _draft_arguments(complete=True, expected_version=1),
+                {
+                    key: value
+                    for key, value in _draft_arguments(complete=True, expected_version=1).items()
+                    if key != "owner_id"
+                },
                 idempotency_key="draft-2",
+                context=_trusted_context(),
             )
         )
     )
@@ -156,11 +172,9 @@ def test_tools_delegate_draft_revision_activation_and_require_hitl_metadata() ->
     assert isinstance(approval_hash, str)
 
     transition_arguments: dict[str, JsonValue] = {
-        "owner_id": "owner-a",
         "plan_id": "plan-1",
         "expected_version": 2,
         "target_status": "active",
-        "actor_id": "owner-a",
         "occurred_at": (NOW + timedelta(minutes=2)).isoformat(),
         "approved": True,
         "approved_payload_hash": approval_hash,
@@ -172,6 +186,7 @@ def test_tools_delegate_draft_revision_activation_and_require_hitl_metadata() ->
                     "planning.transition_plan",
                     transition_arguments,
                     idempotency_key="activate-1",
+                    context=_trusted_context(),
                 )
             )
         )
@@ -182,6 +197,7 @@ def test_tools_delegate_draft_revision_activation_and_require_hitl_metadata() ->
                 transition_arguments,
                 idempotency_key="activate-1",
                 approval_interaction_id="approval-1",
+                context=_trusted_context(),
             )
         )
     )
@@ -192,7 +208,9 @@ def test_tools_delegate_draft_revision_activation_and_require_hitl_metadata() ->
 def test_choice_form_approval_edit_supersede_and_artifact_cards_are_catalog_valid() -> None:
     service = PlanningService()
     incomplete = service.create_draft(_request(complete=False), idempotency_key="draft-1")
-    presenter = PlanningCardPresenter()
+    presenter = PlanningCardPresenter(
+        planning_presenter_config_from_settings(PlanningJourneySettings())
+    )
 
     choice = presenter.intent_choice("interaction-choice-1")
     form = presenter.plan_form(incomplete, field_errors={"horizon": "请选择计划周期"})

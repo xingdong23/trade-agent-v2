@@ -127,7 +127,7 @@ def _build_runtime(tmp_path: Path) -> tuple[ConversationRunService, DefaultHitlS
     runtime = ConversationRunService(
         graph=graph,
         database=database,
-        checkpointer=SQLiteThreadCheckpointer(database),
+        checkpointer=SQLiteThreadCheckpointer(database, namespace="test-journey"),
         event_store=SQLiteEventStore(database),
         hitl_service=hitl_service,
         intent_classifier=MappingIntentClassifier(
@@ -136,9 +136,11 @@ def _build_runtime(tmp_path: Path) -> tuple[ConversationRunService, DefaultHitlS
                     Intent.PLANNING,
                     "fake.echo",
                     1.0,
+                    reason_code="test_fixture",
                 )
             }
         ),
+        unregistered_journey_message="测试环境没有注册对应 Journey",
     )
     return runtime, hitl_service, graph
 
@@ -175,3 +177,15 @@ def test_runtime_can_extend_with_fake_journey_without_modifying_runtime(tmp_path
     assert resumed is not None
     assert resumed.kind == "notice.unsupported"
     assert resumed.data["message"] == "fake journey 已处理: 无需修改 runtime"
+
+
+def test_runtime_preserves_case_sensitive_entity_values() -> None:
+    classification = IntentClassification(
+        "custom",
+        "fake.echo",
+        1.0,
+        reason_code="test_fixture",
+        entities=(("note", "  CamelCase/API-Key  "),),
+    )
+
+    assert ConversationRunService.required_entity(classification, "note") == "CamelCase/API-Key"

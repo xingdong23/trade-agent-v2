@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from datetime import datetime
 from hashlib import sha256
 from typing import Final, Protocol
@@ -656,8 +656,9 @@ class CardEnvelope:
     payload_hash: str = ""
     expires_at: str | None = None
     text_fallback: str = ""
+    catalog: InitVar[CardCatalog | None] = None
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, catalog: CardCatalog | None) -> None:
         normalized_actions = tuple(self.actions)
         normalized_data = dict(self.data)
         object.__setattr__(self, "actions", normalized_actions)
@@ -682,7 +683,7 @@ class CardEnvelope:
         if self.expires_at is not None:
             _validate_iso_datetime(self.expires_at)
 
-        DEFAULT_CARD_CATALOG.validate_envelope(self)
+        (catalog or DEFAULT_CARD_CATALOG).validate_envelope(self)
         computed_hash = self.compute_payload_hash()
         if self.payload_hash:
             if self.payload_hash != computed_hash:
@@ -721,8 +722,15 @@ class CardEnvelope:
         }
 
     @classmethod
-    def from_mapping(cls, payload: Mapping[str, JsonValue]) -> CardEnvelope:
-        return DEFAULT_CARD_CATALOG.parse_mapping(payload)
+    def from_mapping(
+        cls,
+        payload: Mapping[str, JsonValue],
+        *,
+        catalog: CardCatalog | None = None,
+    ) -> CardEnvelope:
+        """使用调用方提供的目录解析 Card；未提供时使用内置目录。"""
+
+        return (catalog or DEFAULT_CARD_CATALOG).parse_mapping(payload)
 
 
 @dataclass(frozen=True, slots=True)
@@ -737,9 +745,39 @@ class CardCatalog:
 
     @classmethod
     def default(cls) -> CardCatalog:
-        return cls(
-            _schemas={(schema.kind, schema.schema_version): schema for schema in _CARD_SCHEMAS}
+        return cls.from_schemas(_CARD_SCHEMAS)
+
+    @classmethod
+    def from_schemas(cls, schemas: Sequence[CardSchema]) -> CardCatalog:
+        """从协议定义构造目录，并拒绝重复 kind/version。"""
+
+        registered: dict[tuple[str, int], CardSchema] = {}
+        for schema in schemas:
+            key = (schema.kind, schema.schema_version)
+            if key in registered:
+                raise CardValidationError(
+                    f"Card schema 重复注册: {schema.kind}.v{schema.schema_version}"
+                )
+            registered[key] = schema
+        return cls(_schemas=registered)
+
+    def extend(self, schemas: Sequence[CardSchema]) -> CardCatalog:
+        """返回包含额外 capability Card 协议的新目录。"""
+
+        additions = tuple(schemas)
+        duplicate = next(
+            (
+                schema
+                for schema in additions
+                if (schema.kind, schema.schema_version) in self._schemas
+            ),
+            None,
         )
+        if duplicate is not None:
+            raise CardValidationError(
+                f"Card schema 重复注册: {duplicate.kind}.v{duplicate.schema_version}"
+            )
+        return CardCatalog.from_schemas((*self._schemas.values(), *additions))
 
     def known_kinds(self) -> frozenset[str]:
         return frozenset(kind for kind, _ in self._schemas)
@@ -802,6 +840,7 @@ class CardCatalog:
             payload_hash=payload_hash,
             expires_at=expires_at,
             text_fallback=text_fallback,
+            catalog=self,
         )
 
     def _parse_source(self, raw_source: JsonValue) -> CardSource:

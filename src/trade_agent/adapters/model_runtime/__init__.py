@@ -3,6 +3,7 @@
 from .lightgbm import (
     LightGBMArtifact,
     LightGBMPredictor,
+    LightGBMRuntimeSpec,
     LightGBMTrainer,
     ModelRuntimeUnavailable,
     PlattCalibration,
@@ -17,6 +18,7 @@ __all__ = [
     "LSTMRuntimeUnavailable",
     "LightGBMArtifact",
     "LightGBMPredictor",
+    "LightGBMRuntimeSpec",
     "LightGBMTrainer",
     "ModelRuntimeUnavailable",
     "PlattCalibration",

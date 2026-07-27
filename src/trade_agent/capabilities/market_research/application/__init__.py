@@ -7,12 +7,19 @@ from trade_agent.capabilities.market_research.contracts import (
 )
 
 from .research import (
+    ConfidenceBand,
+    ResearchAssemblyPolicy,
     ResearchAssemblyService,
     ResearchSafetyError,
+    ResearchSafetyPolicy,
     ResearchSafetyValidator,
     SecurityResearchDraft,
 )
-from .security_resolution import SecurityResolver
+from .security_resolution import (
+    SecurityResolutionCopy,
+    SecurityResolver,
+    security_resolution_copy_from_settings,
+)
 
 
 class MarketResearchApplication:
@@ -26,10 +33,15 @@ class MarketResearchApplication:
 
 
 __all__ = [
+    "ConfidenceBand",
     "MarketResearchApplication",
+    "ResearchAssemblyPolicy",
     "ResearchAssemblyService",
     "ResearchSafetyError",
+    "ResearchSafetyPolicy",
     "ResearchSafetyValidator",
     "SecurityResearchDraft",
+    "SecurityResolutionCopy",
     "SecurityResolver",
+    "security_resolution_copy_from_settings",
 ]

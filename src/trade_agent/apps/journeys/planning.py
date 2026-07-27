@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from typing import Literal
 from uuid import uuid4
 
 from trade_agent.apps.journeys.contracts import (
@@ -14,8 +15,16 @@ from trade_agent.apps.journeys.contracts import (
     JourneyStartContext,
 )
 from trade_agent.capabilities.planning.application import PlanDraftRequest, PlanningService
-from trade_agent.capabilities.planning.cards import PlanningCardPresenter
+from trade_agent.capabilities.planning.cards import (
+    PlanningArtifactSectionSpec,
+    PlanningCardPresenter,
+    PlanningChoiceOptionSpec,
+    PlanningFieldSpec,
+    PlanningPresenterConfig,
+    PlanningPresenterCopy,
+)
 from trade_agent.capabilities.planning.contracts import PlanLineage, TradingPlan
+from trade_agent.core.config import HitlSettings, MarketSettings, PlanningJourneySettings
 from trade_agent.core.hitl import (
     DefaultHitlService,
     HumanInteraction,
@@ -24,15 +33,7 @@ from trade_agent.core.hitl import (
 )
 from trade_agent.core.llm.contracts import JsonValue
 from trade_agent.core.presentation import CardEnvelope
-
-_PLAN_FIELDS = (
-    "horizon",
-    "entry_condition",
-    "invalidation_condition",
-    "target",
-    "position_notes",
-    "risk_notes",
-)
+from trade_agent.core.runtime import IntentClassification
 
 JOURNEY_PLANNING_CHOOSE_OPERATION = "planning.choose_operation"
 JOURNEY_PLANNING_CREATE_PLAN = "planning.create_plan"
@@ -65,7 +66,7 @@ class PlanningOperationSpec:
     label: str
     description: str
     enabled: bool
-    outcome: str
+    outcome: Literal["plan_form", "unsupported"]
     unsupported_kind: str | None = None
     unsupported_message: str | None = None
 
@@ -86,6 +87,7 @@ class PlanningJourneyConfig:
         choice_title: 入口 Choice Card 标题。
         choice_description: 入口 Choice Card 说明。
         choice_text_fallback: 不支持富渲染时使用的降级文本。
+        choice_field_title: 入口 Choice 字段标题。
         operations: 当前环境允许注册的操作集合。
         direct_plan_unsupported_kind: 直接创建计划路径上的不支持问题编码。
         direct_plan_notice_message: 用户表达“要买某股票”时返回的边界提示。
@@ -94,6 +96,13 @@ class PlanningJourneyConfig:
         form_title: 计划表单卡标题。
         form_description: 计划表单卡说明。
         form_text_fallback: 计划表单卡纯文本降级文案。
+        market_code: 规范证券标识中的市场代码。
+        exchange_codes: 当前部署允许选择的交易所代码。
+        symbol_pattern: 证券代码字段的部署级校验规则。
+        interaction_ttl_seconds: HITL 交互有效期，单位秒。
+        text_field_max_length: 计划长文本字段的最大字符数。
+        unknown_operation_message: 选项无法映射时的默认提示文案。
+        presenter_config: Presenter 与字段目录的统一只读配置。
 
     Invariants:
         - 至少包含一个操作定义。
@@ -103,6 +112,7 @@ class PlanningJourneyConfig:
     choice_title: str
     choice_description: str
     choice_text_fallback: str
+    choice_field_title: str
     operations: tuple[PlanningOperationSpec, ...]
     direct_plan_unsupported_kind: str
     direct_plan_notice_message: str
@@ -111,57 +121,168 @@ class PlanningJourneyConfig:
     form_title: str
     form_description: str
     form_text_fallback: str
+    market_code: str
+    exchange_codes: tuple[str, ...]
+    symbol_pattern: str
+    interaction_ttl_seconds: int
+    text_field_max_length: int
+    unknown_operation_message: str
+    presenter_config: PlanningPresenterConfig
 
     def __post_init__(self) -> None:
         if not self.operations:
             raise ValueError("planning journey 至少需要一个操作定义")
+        if not self.market_code.strip() or not self.exchange_codes:
+            raise ValueError("planning journey 必须配置市场代码与交易所目录")
+        if self.interaction_ttl_seconds < 60 or self.text_field_max_length < 1:
+            raise ValueError("planning journey 的 HITL 策略无效")
         try:
-            self.direct_plan_direction_template.format(symbol="NVDA")
+            self.direct_plan_direction_template.format(symbol="SYMBOL")
         except KeyError as exc:
             raise ValueError("direct_plan_direction_template 必须包含 {symbol} 占位符") from exc
 
+    @property
+    def request_form_fields(self) -> tuple[PlanningFieldSpec, ...]:
+        """返回 Journey 请求表单需要投影的字段目录。"""
+
+        return tuple(
+            spec for spec in self.presenter_config.field_specs if spec.include_in_request_form
+        )
+
+    @property
+    def editable_plan_fields(self) -> tuple[PlanningFieldSpec, ...]:
+        """返回会写入 ``PlanDraftRequest`` 的字段目录。"""
+
+        return tuple(
+            spec
+            for spec in self.request_form_fields
+            if spec.plan_attribute is not None and spec.plan_attribute != "security_id"
+        )
+
 
 def default_planning_journey_config() -> PlanningJourneyConfig:
-    """返回第一版 planning journey 使用的默认入口配置。"""
+    """从类型化应用默认值生成 planning journey 配置。"""
+
+    return planning_journey_config_from_settings(
+        PlanningJourneySettings(),
+        MarketSettings(),
+        HitlSettings(),
+    )
+
+
+def planning_presenter_config_from_settings(
+    settings: PlanningJourneySettings,
+) -> PlanningPresenterConfig:
+    """把 Planning 部署配置转换为 capability presenter 运行时配置。"""
+
+    return PlanningPresenterConfig(
+        choice_options=tuple(
+            PlanningChoiceOptionSpec(
+                key=item.operation_id,
+                label=item.label,
+                description=item.description,
+                disabled=not item.enabled,
+            )
+            for item in settings.operations
+        ),
+        field_specs=tuple(
+            PlanningFieldSpec(
+                key=item.key,
+                label=item.label,
+                data_type=item.data_type,
+                control_type=item.control_type,
+                required=item.required,
+                read_only=item.read_only,
+                min_length=item.min_length,
+                max_length=item.max_length,
+                plan_attribute=item.plan_attribute,
+                source_fallback=item.source_fallback,
+                include_in_request_form=item.include_in_request_form,
+                include_in_presenter_form=item.include_in_presenter_form,
+                include_in_approval=item.include_in_approval,
+                approval_severity=item.approval_severity,
+            )
+            for item in settings.fields
+        ),
+        artifact_sections=tuple(
+            PlanningArtifactSectionSpec(
+                title=item.title,
+                kind=item.kind,
+                field_keys=item.field_keys,
+            )
+            for item in settings.artifact_sections
+        ),
+        copy=PlanningPresenterCopy(
+            choice_title=settings.choice_title,
+            choice_description=settings.choice_description,
+            choice_text_fallback=settings.choice_text_fallback,
+            form_title_template=settings.card_form_title_template,
+            form_description=settings.card_form_description,
+            form_text_fallback_template=settings.card_form_text_fallback_template,
+            approval_title=settings.approval_title,
+            approval_description=settings.approval_description,
+            approval_summary_template=settings.approval_summary_template,
+            approval_text_fallback_template=settings.approval_text_fallback_template,
+            artifact_title_template=settings.artifact_title_template,
+            artifact_summary_template=settings.artifact_summary_template,
+            artifact_text_fallback_template=settings.artifact_text_fallback_template,
+            artifact_status_labels=dict(settings.artifact_status_labels),
+            unsupported_title=settings.unsupported_title,
+            field_provenance_label=settings.field_provenance_label,
+            plan_provenance_label=settings.plan_provenance_label,
+            evidence_provenance_label=settings.evidence_provenance_label,
+            evidence_provenance_value=settings.evidence_provenance_value,
+        ),
+    )
+
+
+def planning_journey_config_from_settings(
+    settings: PlanningJourneySettings,
+    market: MarketSettings,
+    hitl: HitlSettings,
+) -> PlanningJourneyConfig:
+    """把部署配置转换为 Journey 只读运行配置。
+
+    Args:
+        settings: Planning 入口、文案与操作目录。
+        market: 美股市场代码、交易所目录与 symbol 规则。
+        hitl: 交互有效期与文本字段限制。
+
+    Returns:
+        不依赖 Pydantic 的 Planning Journey 配置值对象。
+    """
 
     return PlanningJourneyConfig(
-        choice_title="请选择要新增的内容",
-        choice_description="首版只支持创建美股交易计划, 不支持成交记录或真实下单。",
-        choice_text_fallback="请选择创建交易计划; 其他交易操作暂不支持。",
-        operations=(
+        choice_title=settings.choice_title,
+        choice_description=settings.choice_description,
+        choice_text_fallback=settings.choice_text_fallback,
+        choice_field_title=settings.choice_field_title,
+        operations=tuple(
             PlanningOperationSpec(
-                "create_trade_plan",
-                "创建交易计划",
-                "补充条件并在确认后激活计划。",
-                True,
-                "plan_form",
-            ),
-            PlanningOperationSpec(
-                "record_historical_trade",
-                "记录已发生的交易",
-                "首版暂不支持手工成交记录。",
-                False,
-                "unsupported",
-                unsupported_kind="record_historical_trade",
-                unsupported_message="首版只支持创建交易计划, 不支持成交记录或真实下单。",
-            ),
-            PlanningOperationSpec(
-                "execute_trade",
-                "执行真实交易",
-                "系统没有下单或账户能力。",
-                False,
-                "unsupported",
-                unsupported_kind="execute_trade",
-                unsupported_message="首版只支持创建交易计划, 不支持成交记录或真实下单。",
-            ),
+                operation_id=item.operation_id,
+                label=item.label,
+                description=item.description,
+                enabled=item.enabled,
+                outcome=item.outcome,
+                unsupported_kind=item.unsupported_kind,
+                unsupported_message=item.unsupported_message,
+            )
+            for item in settings.operations
         ),
-        direct_plan_unsupported_kind="execute_trade",
-        direct_plan_notice_message="系统不能下单; 可以继续创建仅用于研究与决策的美股交易计划。",
-        direct_plan_direction_template="为 {symbol} 创建买入研究计划, 不执行下单",
-        request_form_default_direction="创建买入研究计划, 不执行下单",
-        form_title="补充美股交易计划",
-        form_description="系统不会下单。请一次补齐证券、周期、入场、失效、目标、仓位和风险。",
-        form_text_fallback="请补充完整的美股交易计划字段。",
+        direct_plan_unsupported_kind=settings.direct_plan_unsupported_kind,
+        direct_plan_notice_message=settings.direct_plan_notice_message,
+        direct_plan_direction_template=settings.direct_plan_direction_template,
+        request_form_default_direction=settings.request_form_default_direction,
+        form_title=settings.form_title,
+        form_description=settings.form_description,
+        form_text_fallback=settings.form_text_fallback,
+        market_code=market.market_code,
+        exchange_codes=market.exchange_codes,
+        symbol_pattern=market.symbol_pattern,
+        interaction_ttl_seconds=hitl.pending_ttl_seconds,
+        text_field_max_length=hitl.text_field_max_length,
+        unknown_operation_message=settings.unknown_operation_message,
+        presenter_config=planning_presenter_config_from_settings(settings),
     )
 
 
@@ -187,8 +308,8 @@ class PlanningConversationJourney(ConversationJourney):
     ) -> None:
         self._planning = planning
         self._hitl = hitl_service
-        self._presenter = presenter or PlanningCardPresenter()
         self._config = config or default_planning_journey_config()
+        self._presenter = presenter or PlanningCardPresenter(self._config.presenter_config)
 
     @property
     def journey_ids(self) -> tuple[str, ...]:
@@ -260,7 +381,7 @@ class PlanningConversationJourney(ConversationJourney):
         context: JourneyStartContext,
         runtime: ConversationRuntimePort,
     ) -> ConversationRunResult:
-        symbol = runtime.required_entity(context.classification, "symbol")
+        symbol, exchange, identifier_locked = _classified_identifier(context.classification)
         notice = runtime.create_unsupported_notice(
             reference_id=context.run_id,
             unsupported_kind=self._config.direct_plan_unsupported_kind,
@@ -274,22 +395,19 @@ class PlanningConversationJourney(ConversationJourney):
             notice,
             "card.created",
         )
-        plan = self._planning.create_draft(
-            PlanDraftRequest(
-                plan_id=str(uuid4()),
-                owner_id=context.owner_id,
-                security_id=f"US:NASDAQ:{symbol}",
-                direction=self._config.direct_plan_direction_template.format(symbol=symbol),
-                created_at=datetime.now(UTC),
-                source_references=(PlanLineage("user_request", context.run_id, 1),),
-                field_sources={"security_id": "用户输入", "direction": "用户输入"},
+        interaction = self._create_request_form(
+            context.owner_id,
+            context.thread_id,
+            context.run_id,
+            str(uuid4()),
+            symbol=symbol,
+            exchange=exchange,
+            identifier_locked=identifier_locked,
+            direction=(
+                self._config.direct_plan_direction_template.format(symbol=symbol)
+                if symbol is not None
+                else self._config.request_form_default_direction
             ),
-            idempotency_key=f"{context.run_id}:create-draft",
-        )
-        interaction = self._create_plan_form(
-            plan,
-            thread_id=context.thread_id,
-            run_id=context.run_id,
         )
         card = runtime.publish_interaction(interaction, "card.created")
         return ConversationRunResult(
@@ -313,7 +431,7 @@ class PlanningConversationJourney(ConversationJourney):
                 unsupported_kind=(operation.unsupported_kind if operation else None)
                 or "unknown_operation",
                 message=(operation.unsupported_message if operation else None)
-                or "当前选择没有映射到受支持的 planning 流程。",
+                or self._config.unknown_operation_message,
                 source_type="planning_request",
             )
             return runtime.publish_card(
@@ -328,6 +446,10 @@ class PlanningConversationJourney(ConversationJourney):
             interaction.thread_id,
             interaction.run_id,
             str(uuid4()),
+            symbol=None,
+            exchange=None,
+            identifier_locked=False,
+            direction=self._config.request_form_default_direction,
         )
         return runtime.publish_interaction(next_interaction, "card.created")
 
@@ -338,13 +460,13 @@ class PlanningConversationJourney(ConversationJourney):
     ) -> CardEnvelope:
         values = interaction.response or {}
         if interaction.subject_type == _SUBJECT_PLANNING_REQUEST:
-            symbol = _required_text(values, "symbol").upper()
             plan = self._planning.create_draft(
                 _request_from_values(
                     values,
+                    field_specs=self._config.editable_plan_fields,
                     owner_id=interaction.owner_id,
                     plan_id=interaction.subject_id,
-                    security_id=f"US:NASDAQ:{symbol}",
+                    security_id=self._security_id_from_values(values),
                     run_id=interaction.run_id,
                 ),
                 idempotency_key=f"{interaction.interaction_id}:create-draft",
@@ -357,6 +479,7 @@ class PlanningConversationJourney(ConversationJourney):
             plan = self._planning.revise_draft(
                 _request_from_values(
                     values,
+                    field_specs=self._config.editable_plan_fields,
                     owner_id=interaction.owner_id,
                     plan_id=current.plan_id,
                     security_id=current.security_id,
@@ -470,7 +593,7 @@ class PlanningConversationJourney(ConversationJourney):
                     "properties": {
                         "choice": {
                             "type": "string",
-                            "title": "操作类型",
+                            "title": self._config.choice_field_title,
                             "enum": [item.operation_id for item in self._config.operations],
                             "x-options": [
                                 {
@@ -487,7 +610,7 @@ class PlanningConversationJourney(ConversationJourney):
                     "additionalProperties": False,
                 },
                 datetime.now(UTC),
-                datetime.now(UTC) + timedelta(hours=24),
+                self._deadline(),
             )
         )
 
@@ -497,6 +620,11 @@ class PlanningConversationJourney(ConversationJourney):
         thread_id: str,
         run_id: str,
         plan_id: str,
+        *,
+        symbol: str | None,
+        exchange: str | None,
+        identifier_locked: bool,
+        direction: str,
     ) -> HumanInteraction:
         return self._create_form_interaction(
             owner_id=owner_id,
@@ -505,8 +633,10 @@ class PlanningConversationJourney(ConversationJourney):
             subject_type=_SUBJECT_PLANNING_REQUEST,
             plan_id=plan_id,
             plan_version=1,
-            symbol=None,
-            direction=self._config.request_form_default_direction,
+            symbol=symbol,
+            exchange=exchange,
+            identifier_locked=identifier_locked,
+            direction=direction,
             defaults={},
         )
 
@@ -524,9 +654,15 @@ class PlanningConversationJourney(ConversationJourney):
             subject_type=_SUBJECT_PLAN_FORM,
             plan_id=plan.plan_id,
             plan_version=plan.version,
-            symbol=plan.security_id.rsplit(":", 1)[-1],
+            symbol=_security_symbol(plan.security_id),
+            exchange=_security_exchange(plan.security_id),
+            identifier_locked=True,
             direction=plan.direction,
-            defaults={field: getattr(plan, field) for field in _PLAN_FIELDS},
+            defaults={
+                spec.key: getattr(plan, spec.plan_attribute)
+                for spec in self._config.editable_plan_fields
+                if spec.plan_attribute is not None
+            },
         )
 
     def _create_form_interaction(
@@ -539,6 +675,8 @@ class PlanningConversationJourney(ConversationJourney):
         plan_id: str,
         plan_version: int,
         symbol: str | None,
+        exchange: str | None,
+        identifier_locked: bool,
         direction: str,
         defaults: Mapping[str, str | None],
     ) -> HumanInteraction:
@@ -547,42 +685,17 @@ class PlanningConversationJourney(ConversationJourney):
             "description": self._config.form_description,
             "text_fallback": self._config.form_text_fallback,
         }
-        properties: dict[str, JsonValue] = {
-            "symbol": {
-                "type": "string",
-                "title": "美股代码",
-                "pattern": "^[A-Za-z]{1,5}$",
-                "default": symbol,
-                "readOnly": symbol is not None,
-            },
-            "direction": {
-                "type": "string",
-                "title": "方向或逻辑",
-                "minLength": 1,
-                "default": direction,
-            },
-        }
-        labels = {
-            "horizon": "计划周期",
-            "entry_condition": "入场条件",
-            "invalidation_condition": "失效或止损条件",
-            "target": "目标条件",
-            "position_notes": "仓位备注",
-            "risk_notes": "风险说明",
-        }
-        for field, label in labels.items():
-            properties[field] = {
-                "type": "string",
-                "title": label,
-                "minLength": 1,
-                "maxLength": 1000,
-                "default": defaults.get(field),
-                "format": "textarea" if field != "horizon" else "text",
-            }
+        properties = self._form_properties(
+            symbol=symbol,
+            exchange=exchange,
+            identifier_locked=identifier_locked,
+            direction=direction,
+            defaults=defaults,
+        )
         schema: dict[str, JsonValue] = {
             "type": "object",
             "properties": properties,
-            "required": ["symbol", "direction", *_PLAN_FIELDS],
+            "required": [spec.key for spec in self._config.request_form_fields if spec.required],
             "additionalProperties": False,
         }
         return self._hitl.create(
@@ -601,7 +714,7 @@ class PlanningConversationJourney(ConversationJourney):
                 _payload_hash(payload),
                 schema,
                 datetime.now(UTC),
-                datetime.now(UTC) + timedelta(hours=24),
+                self._deadline(),
             )
         )
 
@@ -613,6 +726,61 @@ class PlanningConversationJourney(ConversationJourney):
             if item.operation_id == normalized:
                 return item
         return None
+
+    def _form_properties(
+        self,
+        *,
+        symbol: str | None,
+        exchange: str | None,
+        identifier_locked: bool,
+        direction: str,
+        defaults: Mapping[str, str | None],
+    ) -> dict[str, JsonValue]:
+        """按字段目录生成 HITL request form 的 schema properties。"""
+
+        properties: dict[str, JsonValue] = {}
+        for spec in self._config.request_form_fields:
+            field: dict[str, JsonValue] = {
+                "type": "string",
+                "title": spec.label,
+            }
+            if spec.key == "symbol":
+                field["pattern"] = self._config.symbol_pattern
+                field["default"] = symbol
+                field["readOnly"] = identifier_locked
+            elif spec.key == "exchange":
+                field["enum"] = list(self._config.exchange_codes)
+                field["default"] = exchange
+                field["readOnly"] = identifier_locked
+            elif spec.key == "direction":
+                field["default"] = direction
+            else:
+                field["default"] = defaults.get(spec.key)
+            if spec.min_length is not None:
+                field["minLength"] = spec.min_length
+            if spec.max_length is not None:
+                max_length = min(spec.max_length, self._config.text_field_max_length)
+                field["maxLength"] = max_length
+            if spec.control_type == "textarea":
+                field["format"] = "textarea"
+            elif spec.control_type == "text":
+                field["format"] = "text"
+            properties[spec.key] = field
+        return properties
+
+    def _deadline(self) -> datetime:
+        """根据部署级 HITL 策略计算新交互的截止时间。"""
+
+        return datetime.now(UTC) + timedelta(seconds=self._config.interaction_ttl_seconds)
+
+    def _security_id_from_values(self, values: Mapping[str, JsonValue]) -> str:
+        """把人工表单中的交易所与代码组合为规范证券标识。"""
+
+        symbol = _required_text(values, "symbol").upper()
+        exchange = _required_text(values, "exchange").upper()
+        if exchange not in self._config.exchange_codes:
+            raise ValueError("交易所不在当前部署允许目录中")
+        return f"{self._config.market_code}:{exchange}:{symbol}"
 
     def _create_plan_approval(
         self,
@@ -646,7 +814,7 @@ class PlanningConversationJourney(ConversationJourney):
                 _payload_hash(payload),
                 {"type": "object", "properties": {}, "additionalProperties": False},
                 datetime.now(UTC),
-                datetime.now(UTC) + timedelta(hours=24),
+                self._deadline(),
             )
         )
 
@@ -669,9 +837,56 @@ def _required_text(values: Mapping[str, JsonValue], field: str) -> str:
     return value.strip()
 
 
+def _classified_identifier(
+    classification: IntentClassification,
+) -> tuple[str | None, str | None, bool]:
+    """从分类结果中提取可直接用于表单的证券标识信息。
+
+    Returns:
+        ``(symbol, exchange, identifier_locked)`` 三元组；如果分类器已给出
+        ``security_id`` 或 ``exchange + symbol``，则返回锁定后的默认值。
+    """
+
+    security_id = classification.entity("security_id")
+    if security_id is not None and security_id.strip():
+        return _security_symbol(security_id), _security_exchange(security_id), True
+    symbol = classification.entity("symbol")
+    exchange = classification.entity("exchange")
+    normalized_symbol = symbol.strip().upper() if symbol is not None and symbol.strip() else None
+    normalized_exchange = (
+        exchange.strip().upper() if exchange is not None and exchange.strip() else None
+    )
+    return (
+        normalized_symbol,
+        normalized_exchange,
+        normalized_symbol is not None and normalized_exchange is not None,
+    )
+
+
+def _security_exchange(security_id: str) -> str:
+    """从稳定 security_id 中提取交易所。"""
+
+    parts = [segment for segment in security_id.split(":") if segment]
+    if len(parts) >= 3:
+        return parts[-2].upper()
+    if len(parts) == 2:
+        return parts[0].upper()
+    raise ValueError(f"无法从 security_id 解析交易所: {security_id}")
+
+
+def _security_symbol(security_id: str) -> str:
+    """从稳定 security_id 中提取代码。"""
+
+    parts = [segment for segment in security_id.split(":") if segment]
+    if len(parts) >= 2:
+        return parts[-1].upper()
+    raise ValueError(f"无法从 security_id 解析代码: {security_id}")
+
+
 def _request_from_values(
     values: Mapping[str, JsonValue],
     *,
+    field_specs: tuple[PlanningFieldSpec, ...],
     owner_id: str,
     plan_id: str,
     security_id: str,
@@ -692,7 +907,11 @@ def _request_from_values(
         target=_required_text(values, "target"),
         position_notes=_required_text(values, "position_notes"),
         risk_notes=_required_text(values, "risk_notes"),
-        field_sources={field: "用户输入" for field in ("direction", *_PLAN_FIELDS)},
+        field_sources={
+            spec.key: "用户输入"
+            for spec in field_specs
+            if spec.plan_attribute is not None and spec.key != "security_id"
+        },
     )
 
 
@@ -709,4 +928,6 @@ __all__ = [
     "PlanningJourneyConfig",
     "PlanningOperationSpec",
     "default_planning_journey_config",
+    "planning_journey_config_from_settings",
+    "planning_presenter_config_from_settings",
 ]

@@ -15,26 +15,30 @@ from trade_agent.capabilities.market_research.tools import (
 )
 from trade_agent.core.llm.contracts import JsonValue
 from trade_agent.core.presentation import DEFAULT_CARD_CATALOG, CardEnvelope
-from trade_agent.core.tools import ToolRequest
+from trade_agent.core.tools import ToolExecutionContext, ToolExecutionPrincipal, ToolRequest
 
 
 class FakeResearchApplication:
     def __init__(self) -> None:
-        self.calls: list[str] = []
+        self.calls: list[tuple[str, Mapping[str, JsonValue]]] = []
 
     async def resolve_security(self, arguments: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]:
-        self.calls.append("resolve")
+        self.calls.append(("resolve", arguments))
         return {"status": "resolved", "security_id": "US:NASDAQ:NVDA"}
 
     async def research_security(
         self, arguments: Mapping[str, JsonValue]
     ) -> Mapping[str, JsonValue]:
-        self.calls.append("security")
+        self.calls.append(("security", arguments))
         return {"artifact_id": "research-1"}
 
     async def research_theme(self, arguments: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]:
-        self.calls.append("theme")
+        self.calls.append(("theme", arguments))
         return {"artifact_id": "theme-1", "watchlist_proposal_only": True}
+
+
+def _trusted_context() -> ToolExecutionContext:
+    return ToolExecutionContext(ToolExecutionPrincipal(owner_id="owner-a"))
 
 
 def test_market_research_tools_only_delegate_to_application() -> None:
@@ -42,7 +46,9 @@ def test_market_research_tools_only_delegate_to_application() -> None:
     resolved = asyncio.run(
         ResolveSecurityTool(app).handle(
             ToolRequest(
-                "market_research.resolve_security", {"owner_id": "owner-a", "query": "NVDA"}
+                "market_research.resolve_security",
+                {"query": "NVDA"},
+                context=_trusted_context(),
             )
         )
     )
@@ -51,10 +57,10 @@ def test_market_research_tools_only_delegate_to_application() -> None:
             ToolRequest(
                 "market_research.research_security",
                 {
-                    "owner_id": "owner-a",
                     "security_id": "US:NASDAQ:NVDA",
                     "as_of": "2026-07-27T09:30:00Z",
                 },
+                context=_trusted_context(),
             )
         )
     )
@@ -62,14 +68,16 @@ def test_market_research_tools_only_delegate_to_application() -> None:
         ResearchThemeTool(app).handle(
             ToolRequest(
                 "market_research.research_theme",
-                {"owner_id": "owner-a", "theme": "AI 算力", "as_of": "2026-07-27T09:30:00Z"},
+                {"theme": "AI 算力", "as_of": "2026-07-27T09:30:00Z"},
+                context=_trusted_context(),
             )
         )
     )
     assert resolved.payload["status"] == "resolved"
     assert researched.payload["artifact_id"] == "research-1"
     assert theme.payload["watchlist_proposal_only"] is True
-    assert app.calls == ["resolve", "security", "theme"]
+    assert [call[0] for call in app.calls] == ["resolve", "security", "theme"]
+    assert all(arguments["owner_id"] == "owner-a" for _, arguments in app.calls)
 
 
 def _data(card: CardEnvelope) -> dict[str, Any]:

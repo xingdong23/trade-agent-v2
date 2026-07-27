@@ -10,6 +10,7 @@ from trade_agent.capabilities.quantitative.contracts import (
     EvaluationMetrics,
     EvaluationResult,
     EvaluationThresholds,
+    InferencePolicy,
     InferenceRequest,
     ModelRegistry,
     ModelRegistryEntry,
@@ -109,7 +110,11 @@ def test_inference_returns_lineage_and_never_calls_runtime_for_ood_or_missing_fe
     )
     registry.approve("model-1", actor_id="risk-owner")
     runtime = FakeModelRuntime()
-    service = BatchInferenceService(registry, runtime)
+    service = BatchInferenceService(
+        registry,
+        runtime,
+        policy=InferencePolicy("direction-inference.v1", 0.1),
+    )
 
     results = service.predict(
         (
@@ -123,5 +128,6 @@ def test_inference_returns_lineage_and_never_calls_runtime_for_ood_or_missing_fe
     assert available.model_version_id == "model-1"
     assert available.feature_snapshot_id == "features-1"
     assert available.distribution["up_probability"] == 0.7
+    assert available.applicability["inference_policy_version"] == "direction-inference.v1"
     assert sum(item.status is PredictionStatus.UNAVAILABLE for item in results) == 2
     assert runtime.calls == 1

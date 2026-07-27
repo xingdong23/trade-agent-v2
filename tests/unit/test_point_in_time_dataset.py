@@ -40,6 +40,7 @@ def test_builder_freezes_reproducible_point_in_time_snapshot() -> None:
     frozen_at = datetime.now(UTC)
     snapshot = PointInTimeDatasetBuilder().build(
         snapshot_id="snapshot-1",
+        market="US",
         target_definition="return.5d.v1",
         feature_set_version="price-volume.v1",
         calendar_version="nyse-2026.v1",
@@ -77,6 +78,7 @@ def test_builder_blocks_quality_and_leakage_violations(
     with pytest.raises(DatasetQualityError) as error:
         PointInTimeDatasetBuilder().build(
             snapshot_id="snapshot-1",
+            market="US",
             target_definition="return.5d.v1",
             feature_set_version="price-volume.v1",
             calendar_version="nyse-2026.v1",

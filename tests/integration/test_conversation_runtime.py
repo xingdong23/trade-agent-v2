@@ -21,12 +21,18 @@ def _client(tmp_path: Path) -> tuple[TestClient, ApplicationContainer]:
     )
     classifier = MappingIntentClassifier(
         {
-            "新增一个交易": IntentClassification(Intent.PLANNING, "planning.choose_operation", 1.0),
+            "新增一个交易": IntentClassification(
+                Intent.PLANNING,
+                "planning.choose_operation",
+                1.0,
+                reason_code="test_fixture",
+            ),
             "我要买 NVDA": IntentClassification(
                 Intent.PLANNING,
                 "planning.create_plan",
                 1.0,
-                (("symbol", "NVDA"),),
+                reason_code="test_fixture",
+                entities=(("symbol", "NVDA"),),
             ),
         }
     )
@@ -63,6 +69,7 @@ def _respond(
 def _complete_values(*, target: str = "到达目标区间后复核") -> dict[str, JsonValue]:
     return {
         "symbol": "NVDA",
+        "exchange": "NYSE",
         "direction": "买入研究计划, 不执行下单",
         "horizon": "20 个交易日",
         "entry_condition": "回踩后重新站上关键位",
@@ -117,9 +124,12 @@ def test_buy_plan_runs_form_edit_supersede_confirm_and_refresh_recovery(
     assert started.status_code == 200
     run = started.json()
     assert run["status"] == "waiting_for_human"
+    assert isinstance(run["user_message_id"], str)
     form_id = run["pending_interaction_id"]
     form_card = run["card"]
     assert form_card["kind"] == "interaction.form"
+    fields = {field["key"]: field for field in form_card["data"]["fields"]}
+    assert fields["exchange"]["value"] is None
 
     invalid = _respond(
         client,
@@ -187,12 +197,32 @@ def test_buy_plan_runs_form_edit_supersede_confirm_and_refresh_recovery(
     assert confirmed.json() == replay.json()
     artifact = confirmed.json()["card"]
     assert artifact["kind"] == "artifact.trade_plan"
+    assert artifact["data"]["title"].startswith("US:NYSE:NVDA")
     assert "不提供交易执行能力" in artifact["data"]["summary"]
 
     pending = client.get("/api/hitl/pending?thread_id=plan-thread", headers=headers).json()
     assert pending["items"] == []
     artifacts = client.get("/api/artifacts?thread_id=plan-thread", headers=headers).json()
     assert artifacts["items"][0]["card"]["card_id"] == artifact["card_id"]
+    snapshot = client.get(
+        "/api/conversations/plan-thread/snapshot",
+        headers=headers,
+    ).json()
+    assert snapshot["messages"] == [
+        {
+            "id": run["user_message_id"],
+            "role": "user",
+            "content": "我要买 NVDA",
+            "sequence": 1,
+            "created_at": snapshot["messages"][0]["created_at"],
+        }
+    ]
+    assert artifact["card_id"] in {card["card_id"] for card in snapshot["cards"]}
+    other_owner_snapshot = client.get(
+        "/api/conversations/plan-thread/snapshot",
+        headers={"X-User-ID": "owner-b"},
+    ).json()
+    assert other_owner_snapshot == {"cards": [], "messages": [], "cursor": ""}
     events = client.get(f"/api/runs/{run['run_id']}/events?after=0", headers=headers).text
     assert "event: card.superseded" in events
     assert "event: card.resolved" in events
@@ -214,7 +244,8 @@ def test_runtime_uses_injected_classification_instead_of_message_keywords(tmp_pa
                 Intent.PLANNING,
                 "planning.create_plan",
                 1.0,
-                (("symbol", "MSFT"),),
+                reason_code="test_fixture",
+                entities=(("symbol", "MSFT"),),
             )
         }
     )
@@ -230,3 +261,4 @@ def test_runtime_uses_injected_classification_instead_of_message_keywords(tmp_pa
     assert response.status_code == 200
     assert response.json()["card"]["kind"] == "interaction.form"
     assert response.json()["card"]["data"]["fields"][0]["value"] == "MSFT"
+    assert response.json()["card"]["data"]["fields"][1]["value"] is None

@@ -49,6 +49,21 @@ def _oidc_app(tmp_path: Path, verifier: TokenVerifier):  # type: ignore[no-untyp
     return create_app(settings, container, token_verifier=verifier), container
 
 
+def test_api_registers_resource_routes_from_deployment_catalog(tmp_path: Path) -> None:
+    settings = AppSettings.model_validate(
+        {
+            "database": {"path": tmp_path / "custom-resources.db"},
+            "api": {"resource_names": ["lessons"]},
+            "authentication": {"development_user_id": "owner-a"},
+        }
+    )
+    container = build_application_container(settings)
+    client = TestClient(create_app(settings, container))
+
+    assert client.get("/api/lessons").status_code == 200
+    assert client.get("/api/plans").status_code == 404
+
+
 def test_api_auth_resource_owner_scope_and_sse_cursor(tmp_path: Path) -> None:
     app, _ = _app(tmp_path)
     client = TestClient(app)
@@ -80,17 +95,17 @@ def test_api_auth_resource_owner_scope_and_sse_cursor(tmp_path: Path) -> None:
     assert "event: run.started" in stream.text
     assert "id: 1" in stream.text
     assert "event: card.failed" in stream.text
-    assert client.get(f"/api/runs/{run['run_id']}/events?after=2", headers=headers).text == ""
+    assert client.get(f"/api/runs/{run['run_id']}/events?after=3", headers=headers).text == ""
 
     container = app.state.services.container
     event_store = container.event_store
     assert event_store is not None
     for sequence, event_type, revision in (
-        (3, "card.created", 1),
-        (4, "card.updated", 2),
-        (5, "card.resolved", 3),
-        (6, "card.superseded", 4),
-        (7, "card.failed", 5),
+        (4, "card.created", 1),
+        (5, "card.updated", 2),
+        (6, "card.resolved", 3),
+        (7, "card.superseded", 4),
+        (8, "card.failed", 5),
     ):
         event_store.append(
             owner_id="owner-a",
@@ -103,18 +118,18 @@ def test_api_auth_resource_owner_scope_and_sse_cursor(tmp_path: Path) -> None:
                 datetime.now(UTC),
             ),
         )
-    resumed = client.get(f"/api/runs/{run['run_id']}/events?after=4", headers=headers)
+    resumed = client.get(f"/api/runs/{run['run_id']}/events?after=5", headers=headers)
     assert [line for line in resumed.text.splitlines() if line.startswith("id:")] == [
-        "id: 5",
         "id: 6",
         "id: 7",
+        "id: 8",
     ]
     assert resumed.text.count('"card_id": "card-1"') == 3
-    cursor_resumed = client.get(f"/api/runs/{run['run_id']}/events?after=event-4", headers=headers)
+    cursor_resumed = client.get(f"/api/runs/{run['run_id']}/events?after=event-5", headers=headers)
     assert [line for line in cursor_resumed.text.splitlines() if line.startswith("id:")] == [
-        "id: 5",
         "id: 6",
         "id: 7",
+        "id: 8",
     ]
     assert '"event_type": "card.resolved"' in cursor_resumed.text
     assert '"type": "card.resolved"' in cursor_resumed.text

@@ -50,8 +50,8 @@ class ScanSubmissionValidator:
             raise ScanSubmissionError("strategy 与 universe 必须属于当前 owner")
         if not strategy.published:
             raise ScanSubmissionError("扫描只能冻结已发布 strategy version")
-        if model.market != "US" or not model.approved:
-            raise ScanSubmissionError("扫描只能冻结已批准的美股专用模型")
+        if model.market != configuration.market or not model.approved:
+            raise ScanSubmissionError("扫描只能冻结适用当前市场的已批准专用模型")
         if (strategy.target, strategy.horizon) != (model.target, model.horizon):
             raise ScanSubmissionError("strategy target/horizon 与 model 不一致")
         if not universe.security_ids:
@@ -214,9 +214,15 @@ class ScanEvaluator:
         if not isinstance(security, ScanSecurityInput):
             raise TypeError("scan security input 类型错误")
         exclusions: list[ConditionOutcome] = []
-        if security.market != "US":
+        if security.market != submission.configuration.market:
             exclusions.append(
-                ConditionOutcome("market_scope", False, security.market, "US", "仅支持美股")
+                ConditionOutcome(
+                    "market_scope",
+                    False,
+                    security.market,
+                    submission.configuration.market,
+                    "证券市场不在扫描配置范围",
+                )
             )
         if security.exchange not in submission.configuration.allowed_exchanges:
             exclusions.append(

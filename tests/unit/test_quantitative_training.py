@@ -12,6 +12,7 @@ import pytest
 from trade_agent.adapters.model_runtime import (
     LightGBMArtifact,
     LightGBMPredictor,
+    LightGBMRuntimeSpec,
     LightGBMTrainer,
     LSTMArtifact,
     LSTMCandidateTrainer,
@@ -19,16 +20,22 @@ from trade_agent.adapters.model_runtime import (
 )
 from trade_agent.capabilities.quantitative.application.training import (
     EVALUATION_PROTOCOL_VERSION,
+    CandidateReleaseThresholds,
     DeterministicRuleBenchmark,
     EvaluationMetrics,
-    LSTMReleaseThresholds,
     StatisticalBenchmark,
     TrainingAlgorithm,
     TrainingExample,
     TrainingJob,
     TrainingWindow,
-    assess_lstm_release,
+    assess_candidate_release,
     evaluate_benchmark,
+)
+from trade_agent.capabilities.quantitative.contracts import (
+    LabelSchema,
+    ModelArtifactLineage,
+    ModelTaskSpec,
+    SupervisedTaskType,
 )
 
 
@@ -51,6 +58,28 @@ def _job(**overrides: object) -> TrainingJob:
     return TrainingJob(**values)
 
 
+def _binary_task() -> ModelTaskSpec:
+    return ModelTaskSpec(
+        target="direction",
+        horizon="5d",
+        task_type=SupervisedTaskType.BINARY_CLASSIFICATION,
+        label_schema=LabelSchema("direction-binary.v1", (0.0, 1.0)),
+        output_name="up_probability",
+        evaluation_protocol=EVALUATION_PROTOCOL_VERSION,
+    )
+
+
+def _lineage() -> ModelArtifactLineage:
+    job = _job()
+    return ModelArtifactLineage(
+        training_job_id=job.job_id,
+        reproducibility_key=job.reproducibility_key,
+        data_snapshot_id=job.data_snapshot_id,
+        feature_set_version=job.feature_set_version,
+        code_version=job.code_version,
+    )
+
+
 def test_training_job_has_stable_reproducibility_key_and_records_artifact_hash() -> None:
     first = _job(hyperparameters={"num_leaves": 7, "learning_rate": 0.05})
     second = _job(hyperparameters={"learning_rate": 0.05, "num_leaves": 7})
@@ -68,7 +97,7 @@ def test_deterministic_rule_and_statistical_benchmarks_are_repeatable() -> None:
         TrainingExample("c", {"trend": 0.3}, 1),
         TrainingExample("d", {"trend": -0.1}, 0),
     )
-    rule = DeterministicRuleBenchmark("trend")
+    rule = DeterministicRuleBenchmark("trend", 0.0, 0.75, 0.25)
     statistical = StatisticalBenchmark.fit(examples)
 
     assert evaluate_benchmark(rule, examples) == evaluate_benchmark(rule, examples)
@@ -89,6 +118,8 @@ def test_lightgbm_fixed_dataset_produces_identical_calibrated_artifact() -> None
             training_labels=labels[:80],
             calibration_features=features[80:],
             calibration_labels=labels[80:],
+            runtime_spec=LightGBMRuntimeSpec(_binary_task(), "binary", "binary_logloss"),
+            lineage=_lineage(),
             random_seed=20260727,
             hyperparameters={
                 "learning_rate": 0.08,
@@ -122,6 +153,8 @@ def test_lstm_is_optional_and_artifact_uses_shared_evaluation_protocol() -> None
             feature_names=("return",),
             sequences=(((0.1,), (0.2,)),),
             labels=(1,),
+            task_spec=_binary_task(),
+            lineage=_lineage(),
             random_seed=7,
             hyperparameters={},
         )
@@ -133,6 +166,8 @@ def test_lstm_is_optional_and_artifact_uses_shared_evaluation_protocol() -> None
             feature_names=("return",),
             sequences=(((0.1,), (0.2,)), ((-0.2,), (-0.1,))),
             labels=(1, 0),
+            task_spec=_binary_task(),
+            lineage=_lineage(),
             random_seed=7,
             hyperparameters={"hidden_size": 8},
         )
@@ -145,15 +180,15 @@ def test_lstm_is_optional_and_artifact_uses_shared_evaluation_protocol() -> None
 
 def test_lstm_cannot_request_release_unless_every_gate_strictly_beats_lightgbm() -> None:
     baseline = EvaluationMetrics(EVALUATION_PROTOCOL_VERSION, 0.70, 0.08, 0.80, 0.05, 4.0)
-    thresholds = LSTMReleaseThresholds(0.01, 0.01, 0.01, 0.01, 10.0)
+    thresholds = CandidateReleaseThresholds(0.01, 0.01, 0.01, 0.01, 10.0)
     insufficient = EvaluationMetrics(EVALUATION_PROTOCOL_VERSION, 0.72, 0.06, 0.82, 0.07, 10.0)
     accepted = EvaluationMetrics(EVALUATION_PROTOCOL_VERSION, 0.72, 0.06, 0.82, 0.07, 9.9)
 
-    rejected = assess_lstm_release(
-        candidate=insufficient, lightgbm_baseline=baseline, thresholds=thresholds
+    rejected = assess_candidate_release(
+        candidate=insufficient, incumbent=baseline, thresholds=thresholds
     )
-    approved_for_request = assess_lstm_release(
-        candidate=accepted, lightgbm_baseline=baseline, thresholds=thresholds
+    approved_for_request = assess_candidate_release(
+        candidate=accepted, incumbent=baseline, thresholds=thresholds
     )
     assert rejected.may_request_release is False
     assert rejected.reasons == ("inference 延迟未满足门槛",)

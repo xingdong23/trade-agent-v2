@@ -60,7 +60,7 @@ def test_scan_claim_complete_replay_and_restart_skip_completed(
             units=(ScanUnitInput("US:NASDAQ:AAPL", "scan-1:AAPL:v3", {}),),
             max_attempts=2,
         )
-    first = store.claim(worker_id="worker-a")
+    first = store.claim(worker_id="worker-a", lease_seconds=60)
     assert first is not None
     result: dict[str, JsonValue] = {
         "status": "match",
@@ -76,7 +76,7 @@ def test_scan_claim_complete_replay_and_restart_skip_completed(
             result={"status": "match", "score": 0.12},
         )
 
-    after_restart = store.claim(worker_id="worker-b")
+    after_restart = store.claim(worker_id="worker-b", lease_seconds=60)
     assert after_restart is not None
     assert after_restart.security_id != first.security_id
     store.complete(
@@ -93,10 +93,10 @@ def test_scan_retry_budget_and_cancel_preserve_completed_results(
     store: SQLiteScanJobStore,
 ) -> None:
     _create(store, max_attempts=1)
-    first = store.claim(worker_id="worker-a")
+    first = store.claim(worker_id="worker-a", lease_seconds=60)
     assert first is not None
     store.complete(unit_id=first.unit_id, worker_id="worker-a", result={"status": "match"})
-    second = store.claim(worker_id="worker-a")
+    second = store.claim(worker_id="worker-a", lease_seconds=60)
     assert second is not None
     assert (
         store.release_or_fail(
@@ -113,6 +113,7 @@ def test_scan_retry_budget_and_cancel_preserve_completed_results(
         scan_id="scan-2",
         payload={"strategy_version": 3},
         units=(ScanUnitInput("US:NASDAQ:AAPL", "scan-2:AAPL:v3", {}),),
+        max_attempts=2,
     )
     with pytest.raises(ScanJobError):
         store.cancel(owner_id="owner-b", scan_id="scan-2")
@@ -126,11 +127,11 @@ def test_scan_retry_budget_and_cancel_preserve_completed_results(
 
 def test_scan_lease_rejects_other_worker(store: SQLiteScanJobStore) -> None:
     _create(store)
-    claimed = store.claim(worker_id="worker-a")
+    claimed = store.claim(worker_id="worker-a", lease_seconds=60)
     assert claimed is not None
     with pytest.raises(ScanJobError):
         store.complete(unit_id=claimed.unit_id, worker_id="worker-b", result={"ok": True})
-    store.heartbeat(unit_id=claimed.unit_id, worker_id="worker-a")
+    store.heartbeat(unit_id=claimed.unit_id, worker_id="worker-a", lease_seconds=60)
 
 
 def test_expired_lease_is_reclaimed_and_exhausted_unit_becomes_failed(tmp_path: Path) -> None:
@@ -144,7 +145,7 @@ def test_expired_lease_is_reclaimed_and_exhausted_unit_becomes_failed(tmp_path: 
         units=(ScanUnitInput("US:NASDAQ:NVDA", "recover:NVDA:v1", {}),),
         max_attempts=2,
     )
-    first = store.claim(worker_id="worker-a")
+    first = store.claim(worker_id="worker-a", lease_seconds=60)
     assert first is not None
     with database.write_transaction() as connection:
         connection.execute(
@@ -152,7 +153,7 @@ def test_expired_lease_is_reclaimed_and_exhausted_unit_becomes_failed(tmp_path: 
             .where(ScanUnitRecord.unit_id == first.unit_id)
             .values(lease_expires_at=(datetime.now(UTC) - timedelta(seconds=1)).isoformat())
         )
-    reclaimed = store.claim(worker_id="worker-b")
+    reclaimed = store.claim(worker_id="worker-b", lease_seconds=60)
     assert reclaimed is not None
     assert reclaimed.unit_id == first.unit_id
     assert reclaimed.attempts == 2
@@ -162,7 +163,7 @@ def test_expired_lease_is_reclaimed_and_exhausted_unit_becomes_failed(tmp_path: 
             .where(ScanUnitRecord.unit_id == first.unit_id)
             .values(lease_expires_at=(datetime.now(UTC) - timedelta(seconds=1)).isoformat())
         )
-    assert store.claim(worker_id="worker-c") is None
+    assert store.claim(worker_id="worker-c", lease_seconds=60) is None
     progress = store.progress(owner_id="owner-a", scan_id="scan-recover")
     assert progress.status == "failed"
     assert progress.failed == 1

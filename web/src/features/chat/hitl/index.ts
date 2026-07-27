@@ -1,3 +1,4 @@
+import { apiBase } from "../config";
 import type { CardActionRequest, CardEnvelope, JsonValue } from "../types";
 import { isCardEnvelope, isRecord } from "../types";
 
@@ -38,7 +39,7 @@ export class HitlConflictError extends Error {
 
 export class HttpHitlResponseClient implements HitlResponseClient {
   constructor(
-    private readonly baseUrl = "/api",
+    private readonly baseUrl = apiBase,
     private readonly fetcher: typeof fetch = globalThis.fetch.bind(globalThis),
   ) {}
 

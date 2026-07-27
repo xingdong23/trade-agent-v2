@@ -1,3 +1,4 @@
+import { apiBase } from "../config";
 import type {
   CardEnvelope,
   ChatMessage,
@@ -99,16 +100,14 @@ export function toTimeline(snapshot: ChatSnapshot): TimelineEntry[] {
 }
 
 export interface RecoveryPayload {
-  readonly pending: readonly CardEnvelope[];
-  readonly artifacts: readonly CardEnvelope[];
-  readonly jobs: readonly CardEnvelope[];
+  readonly cards: readonly CardEnvelope[];
   readonly messages: readonly ChatMessage[];
   readonly cursor: string;
 }
 
 export class ChatRecoveryClient {
   constructor(
-    private readonly baseUrl = "/api",
+    private readonly baseUrl = apiBase,
     private readonly fetcher: typeof fetch = globalThis.fetch.bind(globalThis),
   ) {}
 
@@ -117,111 +116,24 @@ export class ChatRecoveryClient {
     signal?: AbortSignal,
   ): Promise<RecoveryPayload> {
     const encodedThreadId = encodeURIComponent(threadId);
-    const [pending, artifacts, jobs, messages] = await Promise.all([
-      this.fetchFirstCollection(
-        [
-          `${this.baseUrl}/hitl/pending?thread_id=${encodedThreadId}`,
-          `${this.baseUrl}/threads/${encodedThreadId}/pending-hitl`,
-        ],
-        signal,
-      ),
-      this.fetchFirstCollection(
-        [
-          `${this.baseUrl}/artifacts?thread_id=${encodedThreadId}`,
-          `${this.baseUrl}/threads/${encodedThreadId}/artifacts`,
-        ],
-        signal,
-      ),
-      this.fetchFirstCollection(
-        [
-          `${this.baseUrl}/jobs?thread_id=${encodedThreadId}`,
-          `${this.baseUrl}/threads/${encodedThreadId}/jobs`,
-        ],
-        signal,
-      ),
-      this.fetchMessages(
-        `${this.baseUrl}/threads/${encodedThreadId}/messages`,
-        signal,
-      ),
-    ]);
-    const cursor =
-      [pending.cursor, artifacts.cursor, jobs.cursor, messages.cursor]
-        .filter(Boolean)
-        .sort()
-        .at(-1) ?? "";
-    return {
-      pending: pending.cards,
-      artifacts: artifacts.cards,
-      jobs: jobs.cards,
-      messages: messages.messages,
-      cursor,
-    };
-  }
-
-  private async fetchFirstCollection(
-    urls: readonly string[],
-    signal?: AbortSignal,
-  ): Promise<{ cards: CardEnvelope[]; cursor: string }> {
-    for (const url of urls) {
-      const result = await this.fetchCollection(url, signal);
-      if (result.available) return result;
-    }
-    return { cards: [], cursor: "" };
-  }
-
-  private async fetchCollection(
-    url: string,
-    signal?: AbortSignal,
-  ): Promise<{ cards: CardEnvelope[]; cursor: string; available: boolean }> {
-    const response = await this.fetcher(url, {
-      credentials: "same-origin",
-      signal,
-    });
-    if (response.status === 404 || response.status === 405)
-      return { cards: [], cursor: "", available: false };
+    const response = await this.fetcher(
+      `${this.baseUrl}/conversations/${encodedThreadId}/snapshot`,
+      { credentials: "same-origin", signal },
+    );
     if (!response.ok) throw new Error(`恢复数据失败（${response.status}）`);
-    if (!isJsonResponse(response))
-      return { cards: [], cursor: "", available: false };
+    if (!isJsonResponse(response)) throw new Error("恢复接口未返回 JSON");
     const body: unknown = await response.json();
-    const values = Array.isArray(body)
-      ? body
-      : isRecord(body) && Array.isArray(body.items)
-        ? body.items
-        : [];
+    if (!isRecord(body)) throw new Error("恢复接口返回格式无效");
+    const rawCards = Array.isArray(body.cards) ? body.cards : [];
+    const rawMessages = Array.isArray(body.messages) ? body.messages : [];
     return {
-      cards: values.flatMap((value) => {
-        if (isCardEnvelope(value)) return [value];
-        return isRecord(value) && isCardEnvelope(value.card)
-          ? [value.card]
-          : [];
-      }),
-      cursor:
-        isRecord(body) && typeof body.cursor === "string" ? body.cursor : "",
-      available: true,
-    };
-  }
-
-  private async fetchMessages(
-    url: string,
-    signal?: AbortSignal,
-  ): Promise<{ messages: ChatMessage[]; cursor: string }> {
-    const response = await this.fetcher(url, {
-      credentials: "same-origin",
-      signal,
-    });
-    if (response.status === 404) return { messages: [], cursor: "" };
-    if (!response.ok) throw new Error(`恢复消息失败（${response.status}）`);
-    if (!isJsonResponse(response)) return { messages: [], cursor: "" };
-    const body: unknown = await response.json();
-    const values = Array.isArray(body)
-      ? body
-      : isRecord(body) && Array.isArray(body.items)
-        ? body.items
-        : [];
-    return {
-      messages: values.flatMap((value, index) => parseMessage(value, index)),
-      cursor:
-        isRecord(body) && typeof body.cursor === "string" ? body.cursor : "",
+      cards: rawCards.flatMap((value) =>
+        isCardEnvelope(value) ? [value] : [],
+      ),
+      messages: rawMessages.flatMap((value, index) =>
+        parseMessage(value, index),
+      ),
+      cursor: typeof body.cursor === "string" ? body.cursor : "",
     };
   }
 }

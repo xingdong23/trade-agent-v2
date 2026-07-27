@@ -6,6 +6,7 @@ from typing import Protocol
 
 from trade_agent.core.llm.contracts import JsonValue
 from trade_agent.core.tools import ToolManifest, ToolRequest, ToolResult
+from trade_agent.core.tools.identity import bind_trusted_identity, identity_fields_for_manifest
 
 
 class MarketResearchToolApplication(Protocol):
@@ -51,6 +52,10 @@ class ResolveSecurityTool:
     )
 
     async def handle(self, request: ToolRequest) -> ToolResult:
+        request = bind_trusted_identity(
+            request,
+            identity_fields=identity_fields_for_manifest(self.manifest),
+        )
         _validate(request, self.manifest)
         return ToolResult("resolved", await self.application.resolve_security(request.arguments))
 
@@ -81,6 +86,10 @@ class ResearchSecurityTool:
     )
 
     async def handle(self, request: ToolRequest) -> ToolResult:
+        request = bind_trusted_identity(
+            request,
+            identity_fields=identity_fields_for_manifest(self.manifest),
+        )
         _validate(request, self.manifest)
         return ToolResult("available", await self.application.research_security(request.arguments))
 
@@ -111,6 +120,10 @@ class ResearchThemeTool:
     )
 
     async def handle(self, request: ToolRequest) -> ToolResult:
+        request = bind_trusted_identity(
+            request,
+            identity_fields=identity_fields_for_manifest(self.manifest),
+        )
         _validate(request, self.manifest)
         return ToolResult("available", await self.application.research_theme(request.arguments))
 

@@ -6,7 +6,11 @@ import { asString } from "../types";
 
 const props = defineProps<{ card: CardEnvelope }>();
 const emit = defineEmits<{ refresh: [] }>();
-const isFailure = computed(() => props.card.kind === "notice.failure");
+const isFailure = computed(
+  () =>
+    props.card.state === "failed" ||
+    typeof props.card.data.error_code === "string",
+);
 </script>
 
 <template>

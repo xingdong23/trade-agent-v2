@@ -22,6 +22,7 @@ class ConversationRunResult:
         status: 执行、等待人工、完成或不支持等状态。
         pending_interaction_id: 暂停时等待的 HITL 标识。
         card: 本次推进产生的最后一张 Card。
+        user_message_id: 本次 run 已持久化用户消息的稳定标识。
     """
 
     run_id: str
@@ -29,6 +30,7 @@ class ConversationRunResult:
     status: str
     pending_interaction_id: str | None = None
     card: CardEnvelope | None = None
+    user_message_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,7 +183,7 @@ class ConversationRuntimePort(Protocol):
             name: 当前旅程需要的实体名称。
 
         Returns:
-            去除首尾空白并转为大写的实体值。
+            仅去除首尾空白的实体原值；大小写与格式规范化属于具体业务能力。
 
         Raises:
             ValueError: 分类结果缺少当前旅程所需实体。

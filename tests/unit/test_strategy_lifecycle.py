@@ -10,7 +10,7 @@ from trade_agent.capabilities.strategy.cards import StrategyCardPresenter
 from trade_agent.capabilities.strategy.contracts import StrategyDraft, StrategyPublisher
 from trade_agent.capabilities.strategy.tools import PublishStrategyTool
 from trade_agent.core.llm.contracts import JsonValue
-from trade_agent.core.tools import ToolRequest
+from trade_agent.core.tools import ToolExecutionContext, ToolExecutionPrincipal, ToolRequest
 
 
 def _draft(name: str = "趋势策略") -> StrategyDraft:
@@ -28,6 +28,10 @@ def _draft(name: str = "趋势策略") -> StrategyDraft:
         ("NVDA",),
         ("ILLIQUID",),
     )
+
+
+def _trusted_context() -> ToolExecutionContext:
+    return ToolExecutionContext(ToolExecutionPrincipal(owner_id="owner-a"))
 
 
 def test_publish_requires_approval_and_preserves_old_versions() -> None:
@@ -147,10 +151,10 @@ def test_publish_tool_is_thin_hitl_and_idempotency_declared() -> None:
                 {
                     "strategy_id": draft.strategy_id,
                     "approved": True,
-                    "actor_id": "owner-a",
                     "payload_hash": draft.content_hash,
                 },
                 "command-1",
+                context=_trusted_context(),
             )
         )
     )

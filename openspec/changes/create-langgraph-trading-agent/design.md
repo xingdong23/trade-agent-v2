@@ -262,6 +262,16 @@ LiteLLM 不承担业务 tool 的执行。模型返回的 tool call 或结构化�
 
 架构确认后的第二阶段再按 vertical slice 落地具体实现，优先顺序为持久化与横切契约、证据研究、量化能力、watchlist/strategy、扫描、计划/HITL/Card/Web。若评审改变模块边界，先更新 OpenSpec 工件与骨架，再进入业务代码，避免在未经确认的结构上积累实现细节。
 
+### 14. 区分部署策略、业务目录与稳定协议常量
+
+全仓硬编码审计按三类处理。数据库路径、监听地址、checkpoint namespace、开发身份、OIDC claim/JWKS、LiteLLM endpoint、worker lease/retry、提醒渠道、Agent Tool allowlist、市场目录和可观测性端点属于部署策略，必须从唯一的 `AppSettings` 入口读取并由 composition root 显式注入。Planning 与 Research-to-plan 的操作目录、表单字段、Card 文案、复盘目标、lineage 类型和资源目录属于可替换业务配置；生产装配不得悄悄退回 Journey 或 presenter 内的第二套默认值。
+
+稳定的 Agent/Journey/Tool ID、Card kind、event type、schema version、领域状态机、量化评测协议和首版仅美股的产品边界属于版本化协议，不应为了“零字符串”而改成任意运行时输入。这些常量必须集中在 registry、catalog、enum 或明确的协议模块中，并通过未知值拒绝、版本校验和架构测试防止漂移。测试 fixture、fake provider 返回值和模板占位符验证样例不属于生产部署假设。
+
+Tool 执行身份由受信 `ToolExecutionContext` 注入，payload 中的 owner/actor 字段只能与受信主体一致，不能由 LLM 或客户端自报。Agent 的最终 Tool 白名单允许部署配置覆盖 manifest 预置目录，未知 Agent ID 启动失败。量化训练、推理、扫描任务、label schema 和 lineage 均要求显式版本或策略输入，不使用伪造的 model/strategy reference 补齐缺失来源。
+
+Web 客户端只读取 `VITE_API_BASE_URL`，每个新会话生成并在 session 中保存 thread ID。刷新恢复统一调用 `GET /api/conversations/{thread_id}/snapshot`，由后端按 owner 汇总消息、Card、pending HITL 和资源目录；客户端不猜测多套 URL，也不使用固定 `local` thread。Artifact、Progress 和 Notice 使用协议 family renderer，新增 capability kind 不要求修改通用 shell 的业务枚举。
+
 ## 风险与取舍
 
 - [初始范围横跨多个领域 module] -> 按依赖顺序交付 vertical slice，并将每项能力置于稳定 application command 之后；延后完整客户端和高级分析。

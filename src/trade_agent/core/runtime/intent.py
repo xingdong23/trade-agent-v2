@@ -7,7 +7,7 @@
 from dataclasses import dataclass
 from typing import Protocol
 
-from .contracts import Intent
+from .contracts import Intent, RouteIntent
 
 
 @dataclass(frozen=True, slots=True)
@@ -15,7 +15,7 @@ class IntentClassification:
     """一次用户消息的结构化分类结果。
 
     Attributes:
-        intent: Supervisor 使用的顶层 Agent 意图。
+        intent: Supervisor 使用的顶层 Agent 意图或扩展 Agent ID。
         journey_id: JourneyRegistry 中注册的业务旅程标识；为空表示需要澄清。
         confidence: 分类置信度，取值范围为 0 到 1。
         entities: 分类阶段提取的稳定实体，例如标准化美股代码。
@@ -26,15 +26,17 @@ class IntentClassification:
         - 只有已注册的 ``journey_id`` 才能在运行时执行。
     """
 
-    intent: Intent
+    intent: RouteIntent
     journey_id: str | None
     confidence: float
+    reason_code: str
     entities: tuple[tuple[str, str], ...] = ()
-    reason_code: str = "classified"
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.confidence <= 1.0:
             raise ValueError("intent confidence 必须位于 0 到 1")
+        if not self.reason_code.strip():
+            raise ValueError("intent reason_code 不能为空")
 
     def entity(self, name: str) -> str | None:
         """读取分类器提取的单个实体。

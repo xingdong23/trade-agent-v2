@@ -20,6 +20,7 @@ from trade_agent.capabilities.quantitative.contracts import (
     EvaluationMetrics,
     EvaluationResult,
     HardRule,
+    InferencePolicy,
     ModelRegistry,
     ModelRegistryEntry,
     ModelRuntime,
@@ -64,7 +65,11 @@ def _inference(runtime: RecordingRuntime) -> BatchInferenceService:
         )
     )
     registry.approve("model-approved", actor_id="risk-owner")
-    return BatchInferenceService(registry, runtime, max_missing_ratio=0.1)
+    return BatchInferenceService(
+        registry,
+        runtime,
+        policy=InferencePolicy("scan-inference.v1", 0.1),
+    )
 
 
 def _security(
@@ -123,6 +128,7 @@ def _submission_inputs() -> dict[str, object]:
         "ranking": RankingDefinition("ranking-v2", "up_probability", 1.0, {"quality": 0.1}),
         "configuration": ScanConfiguration(
             "scan-config-v1",
+            "US",
             ("NASDAQ", "NYSE"),
             1_000_000,
             0.1,

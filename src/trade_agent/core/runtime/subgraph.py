@@ -34,5 +34,6 @@ class AgentSubgraph:
             idempotency_key=request.idempotency_key,
             agent_id=self.manifest.agent_id,
             approval_interaction_id=request.approval_interaction_id,
+            context=request.context,
         )
         return await self.tool_gateway.invoke(scoped)

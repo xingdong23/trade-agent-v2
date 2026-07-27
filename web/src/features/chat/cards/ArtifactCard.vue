@@ -9,17 +9,9 @@ const title = computed(() => asString(props.card.data.title, "分析结果"));
 const summary = computed(() => asString(props.card.data.summary));
 const sections = computed(() => asRecords(props.card.data.sections));
 const provenance = computed(() => asRecords(props.card.data.provenance));
-const typeLabel = computed(() => {
-  const labels: Record<string, string> = {
-    "artifact.research": "市场研究",
-    "artifact.strategy": "策略",
-    "artifact.quantitative_snapshot": "量化快照",
-    "artifact.scan_result": "扫描结果",
-    "artifact.trade_plan": "交易计划",
-    "artifact.reminder": "提醒",
-  };
-  return labels[props.card.kind] ?? "分析结果";
-});
+const typeLabel = computed(() =>
+  asString(props.card.data.type_label, "结构化产物"),
+);
 </script>
 
 <template>

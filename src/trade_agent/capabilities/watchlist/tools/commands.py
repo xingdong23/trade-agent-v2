@@ -15,6 +15,7 @@ from trade_agent.capabilities.watchlist.contracts import (
 )
 from trade_agent.core.llm.contracts import JsonValue
 from trade_agent.core.tools import ToolManifest, ToolRequest, ToolResult
+from trade_agent.core.tools.identity import bind_trusted_identity, identity_fields_for_manifest
 
 
 class WatchlistToolApplication(Protocol):
@@ -95,6 +96,10 @@ class ValidateWatchlistImportTool:
     )
 
     async def handle(self, request: ToolRequest) -> ToolResult:
+        request = bind_trusted_identity(
+            request,
+            identity_fields=identity_fields_for_manifest(self.manifest),
+        )
         _require_tool(request, self.manifest)
         input_rows = _require_list(request, "rows")
         rows = tuple(_parse_import_candidate(item) for item in input_rows)
@@ -167,6 +172,10 @@ class ApproveWatchlistImportTool:
     )
 
     async def handle(self, request: ToolRequest) -> ToolResult:
+        request = bind_trusted_identity(
+            request,
+            identity_fields=identity_fields_for_manifest(self.manifest),
+        )
         _require_tool(request, self.manifest)
         if request.idempotency_key is None or not request.idempotency_key.strip():
             raise ValueError("批量导入审批必须提供 idempotency key")
@@ -235,6 +244,10 @@ class AcceptClassificationSuggestionTool:
     )
 
     async def handle(self, request: ToolRequest) -> ToolResult:
+        request = bind_trusted_identity(
+            request,
+            identity_fields=identity_fields_for_manifest(self.manifest),
+        )
         _require_tool(request, self.manifest)
         idempotency_key = _require_idempotency_key(request, "分类建议确认")
         suggestion = ClassificationSuggestion(
@@ -304,6 +317,10 @@ class FreezeUniverseTool:
     )
 
     async def handle(self, request: ToolRequest) -> ToolResult:
+        request = bind_trusted_identity(
+            request,
+            identity_fields=identity_fields_for_manifest(self.manifest),
+        )
         _require_tool(request, self.manifest)
         group_id = request.arguments.get("group_id")
         if group_id is not None and not isinstance(group_id, str):

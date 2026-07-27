@@ -102,6 +102,7 @@ class PointInTimeDatasetBuilder:
         self,
         *,
         snapshot_id: str,
+        market: str,
         target_definition: str,
         feature_set_version: str,
         calendar_version: str,
@@ -110,6 +111,8 @@ class PointInTimeDatasetBuilder:
         frozen_at: datetime,
         membership_as_of_available: bool,
     ) -> DatasetSnapshot:
+        if not market.strip():
+            raise ValueError("dataset market 不能为空")
         violations = validate_dataset(
             records,
             expected_adjustment_version=adjustment_version,
@@ -119,7 +122,7 @@ class PointInTimeDatasetBuilder:
             raise DatasetQualityError(violations)
         return DatasetSnapshot(
             snapshot_id=snapshot_id,
-            market="US",
+            market=market,
             target_definition=target_definition,
             feature_set_version=feature_set_version,
             calendar_version=calendar_version,

@@ -16,10 +16,14 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
-from trade_agent.adapters.authentication import PyJwtOidcTokenVerifier
+from trade_agent.adapters.authentication import (
+    OidcClaimMapping,
+    OidcRoleClaim,
+    PyJwtOidcTokenVerifier,
+)
 from trade_agent.adapters.sqlite import SQLiteAggregateRepository
 from trade_agent.adapters.sqlite.json_support import load_json, payload_hash
-from trade_agent.adapters.sqlite.schema import AggregateRecord, RunEventRecord
+from trade_agent.adapters.sqlite.schema import AggregateRecord, RunEventRecord, RunRecord
 from trade_agent.apps.container import ApplicationContainer, build_application_container
 from trade_agent.core.config import AppSettings
 from trade_agent.core.hitl import (
@@ -93,7 +97,7 @@ def create_app(
     resolved_settings = settings or AppSettings()
     resolved_container = container or build_application_container(resolved_settings)
     services = ApiServices(resolved_container, resolved_settings)
-    app = FastAPI(title="Trade Agent API", version="0.1.0")
+    app = FastAPI(title=resolved_settings.api.title, version=resolved_settings.api.version)
     app.state.services = services
     resolved_verifier = token_verifier or _build_token_verifier(resolved_settings)
     resolver = UserContextResolver(
@@ -143,7 +147,22 @@ def create_app(
             response["pending_interaction_id"] = result.pending_interaction_id
         if result.card is not None:
             response["card"] = result.card.to_mapping()
+        if result.user_message_id is not None:
+            response["user_message_id"] = result.user_message_id
         return response
+
+    @app.get("/api/conversations/{thread_id}/snapshot")
+    def conversation_snapshot(
+        thread_id: str,
+        user: Annotated[UserContext, Depends(user_context)],
+    ) -> Mapping[str, JsonValue]:
+        """返回一个 thread 的确定性恢复快照。"""
+
+        return _conversation_snapshot(
+            container=resolved_container,
+            owner_id=user.user_id,
+            thread_id=thread_id,
+        )
 
     @app.get("/api/hitl/pending")
     def pending_hitl(
@@ -286,19 +305,7 @@ def create_app(
         )
         return _interaction_mapping(interaction)
 
-    resource_names = (
-        "cards",
-        "artifacts",
-        "jobs",
-        "strategies",
-        "models",
-        "scans",
-        "watchlists",
-        "plans",
-        "reminders",
-        "reviews",
-    )
-    for resource_name in resource_names:
+    for resource_name in resolved_container.resource_names:
         _register_resource_routes(app, resource_name, resolved_container, user_context)
 
     @app.get("/api/runs/{run_id}/events")
@@ -405,7 +412,23 @@ def _build_token_verifier(settings: AppSettings) -> TokenVerifier | None:
     audience = settings.authentication.audience
     if issuer is None or audience is None:
         return None
-    return PyJwtOidcTokenVerifier(issuer=str(issuer), audience=audience)
+    authentication = settings.authentication
+    return PyJwtOidcTokenVerifier(
+        issuer=str(issuer),
+        audience=audience,
+        discovery_timeout_seconds=authentication.discovery_timeout_seconds,
+        jwks_timeout_seconds=authentication.jwks_timeout_seconds,
+        jwks_cache_ttl_seconds=authentication.jwks_cache_ttl_seconds,
+        claim_mapping=OidcClaimMapping(
+            subject_claim=authentication.subject_claim,
+            role_claims=tuple(
+                OidcRoleClaim(path=item.path, separator=item.separator)
+                for item in authentication.role_claims
+            ),
+        ),
+        required_claims=authentication.required_claims,
+        signing_algorithms=authentication.signing_algorithms,
+    )
 
 
 def _interaction_mapping(interaction: HumanInteraction) -> Mapping[str, JsonValue]:
@@ -506,6 +529,130 @@ def _list_resource_items(
     return items
 
 
+def _conversation_snapshot(
+    *,
+    container: ApplicationContainer,
+    owner_id: str,
+    thread_id: str,
+) -> Mapping[str, JsonValue]:
+    """从持久化事件、HITL 与资源目录重建会话视图。
+
+    Args:
+        container: 已完成装配的应用容器。
+        owner_id: 已认证资源所有者。
+        thread_id: 需要恢复的会话线程。
+
+    Returns:
+        包含最新 Card、消息和 SSE 游标的统一前端快照。
+
+    Notes:
+        当前返回空 cursor，使客户端只对活跃 run 从头重放事件；Card revision 与
+        message ID 会负责去重。这样不会把其他 run 的 cursor 错用于当前 SSE。
+    """
+
+    cards: dict[str, CardEnvelope] = {}
+    messages: list[JsonValue] = []
+    database = _required(container.database)
+    with database.read_connection() as connection:
+        rows = connection.execute(
+            select(
+                RunEventRecord.event_id,
+                RunEventRecord.event_type,
+                RunEventRecord.payload_json,
+                RunEventRecord.occurred_at,
+            )
+            .join(RunRecord, RunRecord.run_id == RunEventRecord.run_id)
+            .where(
+                RunRecord.owner_id == owner_id,
+                RunRecord.thread_id == thread_id,
+                RunEventRecord.owner_id == owner_id,
+            )
+            .order_by(
+                RunRecord.created_at,
+                RunRecord.run_id,
+                RunEventRecord.sequence,
+            )
+        ).mappings()
+        for row in rows:
+            payload = load_json(str(row["payload_json"]))
+            card = _extract_card(payload)
+            if card is not None:
+                current = cards.get(card.card_id)
+                if current is None or card.revision > current.revision:
+                    cards[card.card_id] = card
+            message = _event_message(
+                event_id=str(row["event_id"]),
+                event_type=str(row["event_type"]),
+                payload=payload,
+                occurred_at=str(row["occurred_at"]),
+                sequence=len(messages) + 1,
+            )
+            if message is not None:
+                messages.append(dict(message))
+
+    hitl_service = _required(container.hitl_service)
+    for interaction in hitl_service.list_pending(owner_id):
+        if interaction.thread_id != thread_id:
+            continue
+        card = _hitl_card(interaction)
+        current = cards.get(card.card_id)
+        if current is None or card.revision > current.revision:
+            cards[card.card_id] = card
+
+    for resource_name in container.resource_names:
+        for item in _list_resource_items(
+            container=container,
+            resource_name=resource_name,
+            owner_id=owner_id,
+            thread_id=thread_id,
+        ):
+            card = _extract_card(item)
+            if card is None:
+                continue
+            current = cards.get(card.card_id)
+            if current is None or card.revision > current.revision:
+                cards[card.card_id] = card
+
+    return {
+        "cards": [card.to_mapping() for card in cards.values()],
+        "messages": messages,
+        "cursor": "",
+    }
+
+
+def _event_message(
+    *,
+    event_id: str,
+    event_type: str,
+    payload: Mapping[str, JsonValue],
+    occurred_at: str,
+    sequence: int,
+) -> Mapping[str, JsonValue] | None:
+    """把受支持的持久化消息事件转换为前端消息合同。"""
+
+    if event_type not in {"message.created", "assistant.message"}:
+        return None
+    raw_message = payload.get("message")
+    message = raw_message if isinstance(raw_message, Mapping) else payload
+    content = message.get("content")
+    if not isinstance(content, str):
+        return None
+    raw_role = message.get("role")
+    role = (
+        raw_role
+        if isinstance(raw_role, str) and raw_role in {"user", "assistant", "system"}
+        else "assistant"
+    )
+    raw_id = message.get("id")
+    return {
+        "id": raw_id if isinstance(raw_id, str) and raw_id else event_id,
+        "role": role,
+        "content": content,
+        "sequence": sequence,
+        "created_at": occurred_at,
+    }
+
+
 def _resource_thread_id(payload: Mapping[str, JsonValue]) -> str | None:
     value = payload.get("thread_id")
     return value if isinstance(value, str) and value else None
@@ -528,7 +675,12 @@ def _extract_card(payload: Mapping[str, JsonValue]) -> CardEnvelope | None:
 def main() -> None:
     import uvicorn
 
-    uvicorn.run(create_app(), host="127.0.0.1", port=8000)
+    settings = AppSettings()
+    uvicorn.run(
+        create_app(settings),
+        host=settings.api.host,
+        port=settings.api.port,
+    )
 
 
 __all__ = ["create_app", "main"]

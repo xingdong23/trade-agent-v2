@@ -17,6 +17,14 @@ class ResearchSectionKind(StrEnum):
     INVALIDATION = "invalidation"
 
 
+class ResearchSafetyClass(StrEnum):
+    """供本地安全策略判断研究主张性质的结构化标签。"""
+
+    ANALYSIS = "analysis"
+    RETURN_GUARANTEE = "return_guarantee"
+    EXECUTION_CLAIM = "execution_claim"
+
+
 @dataclass(frozen=True, slots=True)
 class ResearchClaim:
     """表示一条必须绑定证据的研究主张。
@@ -25,11 +33,13 @@ class ResearchClaim:
         text: 面向用户展示的主张文本。
         evidence_ids: 支撑该主张的 evidence 标识集合。
         confidence: 该主张当前的置信度分级。
+        safety_class: 主张的结构化安全分类，不从展示文本推断。
     """
 
     text: str
     evidence_ids: tuple[str, ...]
     confidence: str
+    safety_class: ResearchSafetyClass = ResearchSafetyClass.ANALYSIS
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +70,7 @@ class SecurityResearchArtifact:
         evidence: 本次研究直接引用的证据快照集合。
         gaps: 对整份研究仍然成立的数据缺口。
         confidence: 对整体研究结论的置信度分级。
+        assembly_policy_version: 生成章节缺口与置信度所用的策略版本。
     """
 
     artifact_id: str
@@ -70,6 +81,7 @@ class SecurityResearchArtifact:
     evidence: tuple[Evidence, ...]
     gaps: tuple[str, ...]
     confidence: str
+    assembly_policy_version: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +94,7 @@ class ThemeCandidate:
         evidence_ids: 支撑该角色判断的证据标识集合。
         moat_hypothesis: 对竞争优势或位置的简要假设。
         risks: 当前候选项需要额外关注的主要风险。
+        safety_classes: 候选描述涉及的结构化安全分类。
     """
 
     role: str
@@ -89,6 +102,7 @@ class ThemeCandidate:
     evidence_ids: tuple[str, ...]
     moat_hypothesis: str
     risks: tuple[str, ...]
+    safety_classes: tuple[ResearchSafetyClass, ...] = (ResearchSafetyClass.ANALYSIS,)
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,6 +118,7 @@ class ThemeResearchArtifact:
         evidence: 支撑主题判断的证据快照集合。
         gaps: 当前主题研究仍然存在的信息缺口。
         watchlist_proposal_only: 是否仅允许提出 watchlist 建议而不直接写入。
+        assembly_policy_version: 生成该产物所用的研究策略版本。
     """
 
     artifact_id: str
@@ -113,7 +128,8 @@ class ThemeResearchArtifact:
     candidates: tuple[ThemeCandidate, ...]
     evidence: tuple[Evidence, ...]
     gaps: tuple[str, ...]
-    watchlist_proposal_only: bool = True
+    watchlist_proposal_only: bool
+    assembly_policy_version: str
 
 
 def validate_research_claims(

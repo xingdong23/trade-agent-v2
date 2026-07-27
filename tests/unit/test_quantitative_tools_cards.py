@@ -21,7 +21,7 @@ from trade_agent.capabilities.quantitative.tools import (
 )
 from trade_agent.core.llm.contracts import JsonValue
 from trade_agent.core.presentation import DEFAULT_CARD_CATALOG, CardEnvelope
-from trade_agent.core.tools import ToolRequest
+from trade_agent.core.tools import ToolExecutionContext, ToolExecutionPrincipal, ToolRequest
 
 
 class FakeQuantitativeApplication:
@@ -79,27 +79,46 @@ def _scan_arguments() -> dict[str, JsonValue]:
     }
 
 
+def _trusted_context() -> ToolExecutionContext:
+    return ToolExecutionContext(ToolExecutionPrincipal(owner_id="owner-a"))
+
+
 def test_quantitative_tools_delegate_without_business_logic() -> None:
     application = FakeQuantitativeApplication()
     prediction = asyncio.run(
         GetPredictionTool(application).handle(
-            ToolRequest("quantitative.get_prediction", _security_arguments())
+            ToolRequest(
+                "quantitative.get_prediction",
+                {key: value for key, value in _security_arguments().items() if key != "owner_id"},
+                context=_trusted_context(),
+            )
         )
     )
     snapshot = asyncio.run(
         GetQuantitativeSnapshotTool(application).handle(
-            ToolRequest("quantitative.get_quantitative_snapshot", _security_arguments())
+            ToolRequest(
+                "quantitative.get_quantitative_snapshot",
+                {key: value for key, value in _security_arguments().items() if key != "owner_id"},
+                context=_trusted_context(),
+            )
         )
     )
     submitted = asyncio.run(
         SubmitScanTool(application).handle(
-            ToolRequest("quantitative.submit_scan", _scan_arguments(), "submit-1")
+            ToolRequest(
+                "quantitative.submit_scan",
+                {key: value for key, value in _scan_arguments().items() if key != "owner_id"},
+                "submit-1",
+                context=_trusted_context(),
+            )
         )
     )
     status = asyncio.run(
         GetScanStatusTool(application).handle(
             ToolRequest(
-                "quantitative.get_scan_status", {"owner_id": "owner-a", "scan_id": "scan-1"}
+                "quantitative.get_scan_status",
+                {"scan_id": "scan-1"},
+                context=_trusted_context(),
             )
         )
     )
@@ -107,7 +126,8 @@ def test_quantitative_tools_delegate_without_business_logic() -> None:
         ListScanResultsTool(application).handle(
             ToolRequest(
                 "quantitative.list_scan_results",
-                {"owner_id": "owner-a", "scan_id": "scan-1"},
+                {"scan_id": "scan-1"},
+                context=_trusted_context(),
             )
         )
     )
@@ -123,6 +143,7 @@ def test_quantitative_tools_delegate_without_business_logic() -> None:
         "get_scan_status",
         "list_scan_results",
     ]
+    assert all(call[1]["owner_id"] == "owner-a" for call in application.calls)
 
 
 def test_scan_submission_declares_and_requires_hitl_idempotency() -> None:

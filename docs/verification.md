@@ -5,18 +5,18 @@
 本记录对应 OpenSpec 变更 `create-langgraph-trading-agent`。默认验证只运行非 live
 测试，覆盖模块依赖、SQLite、HITL/Card/SSE、量化模型、API/CLI/Web 和安全边界。
 
-## 2026-07-27 验证结果
+## 2026-07-28 验证结果
 
 | 验证项 | 命令 | 结果 |
 | --- | --- | --- |
-| Python 格式 | `uv run ruff format --check .` | 206 个文件格式正确 |
+| Python 格式 | `uv run ruff format --check .` | 219 个文件格式正确 |
 | Python lint | `uv run ruff check .` | 通过 |
-| 严格类型检查 | `uv run mypy src tests` | 187 个源文件无错误 |
-| 完整非 live 测试 | `uv run pytest -q` | 171 项通过 |
+| 严格类型检查 | `uv run mypy` | 198 个源文件无错误 |
+| 完整非 live 测试 | `uv run pytest` | 214 项通过，1 个第三方弃用警告 |
 | Web lint | `npm run lint` | 通过 |
 | Web 类型检查 | `npm run typecheck` | 通过 |
-| Web 生产构建 | `npm run build` | 通过，40 个模块完成转换 |
-| OpenSpec 校验 | `openspec validate create-langgraph-trading-agent --type change --strict --json` | 1 项通过，0 个问题 |
+| Web 生产构建 | `npm run build` | 通过，41 个模块完成转换 |
+| OpenSpec 校验 | `openspec validate --all --strict --no-interactive` | 1 项通过，0 个问题 |
 
 测试覆盖的关键门禁包括：
 
@@ -31,6 +31,11 @@
 - 单一 conversation run 驱动“美股歧义澄清 -> citation 研究 -> 冻结 watchlist ->
   专用模型扫描 -> Progress/Review Card -> LLM 总结持久化结果 -> 计划/提醒审批 ->
   Artifact Card -> 复盘”，并通过 API、CLI 待办和 SSE 验证连续恢复。
+- 类型化部署配置覆盖 checkpoint namespace、OIDC/JWKS、LiteLLM endpoint、worker、
+  Agent Tool allowlist、Planning/Research-to-plan 字段与文案、提醒渠道和复盘目录；
+  未注册 Agent/Worker/Journey 均 fail closed。
+- Web 使用动态 thread ID、单一 API base URL 和 owner 隔离的 conversation snapshot
+  恢复消息、Card、pending HITL 与资源，不依赖固定 thread 或猜测式 endpoint。
 
 ## Migration smoke test
 

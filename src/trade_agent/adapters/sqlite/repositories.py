@@ -355,7 +355,7 @@ class SQLiteJobStore:
         job_id: str,
         job_type: str,
         payload: Mapping[str, JsonValue],
-        max_attempts: int = 3,
+        max_attempts: int,
     ) -> None:
         if max_attempts < 1:
             raise ValueError("max_attempts 必须大于 0")
@@ -375,7 +375,7 @@ class SQLiteJobStore:
                 )
             )
 
-    def claim(self, *, worker_id: str, lease_seconds: int = 60) -> ClaimedJob | None:
+    def claim(self, *, worker_id: str, lease_seconds: int) -> ClaimedJob | None:
         if lease_seconds < 1:
             raise ValueError("lease_seconds 必须大于 0")
         now = datetime.now(UTC)
@@ -434,7 +434,7 @@ class SQLiteJobStore:
                 int(row["attempts"]),
             )
 
-    def heartbeat(self, *, job_id: str, worker_id: str, lease_seconds: int = 60) -> None:
+    def heartbeat(self, *, job_id: str, worker_id: str, lease_seconds: int) -> None:
         now = datetime.now(UTC)
         with self._database.write_transaction() as connection:
             updated = connection.execute(

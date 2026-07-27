@@ -63,6 +63,29 @@ class EvidenceConflict:
 
 
 @dataclass(frozen=True, slots=True)
+class EvidenceConflictRule:
+    """定义同类 evidence 中哪些事实字段需要做实质冲突比较。
+
+    Attributes:
+        value_paths: 支持点号嵌套的事实字段路径。
+        absolute_tolerance: 数值字段允许的绝对误差。
+
+    Invariants:
+        - 至少声明一个事实字段。
+        - 数值容差不能为负。
+    """
+
+    value_paths: tuple[str, ...]
+    absolute_tolerance: float
+
+    def __post_init__(self) -> None:
+        if not self.value_paths or any(not path.strip() for path in self.value_paths):
+            raise ValueError("evidence conflict rule 必须声明事实字段")
+        if self.absolute_tolerance < 0:
+            raise ValueError("evidence conflict 数值容差不能为负")
+
+
+@dataclass(frozen=True, slots=True)
 class Claim:
     """表示一条必须绑定证据的事实主张。
 
@@ -159,9 +182,11 @@ class EvidenceTrustPolicy:
         self,
         *,
         allowed_providers: Mapping[str, frozenset[str]],
+        conflict_rules: Mapping[str, EvidenceConflictRule],
         require_fresh: frozenset[str] = frozenset(),
     ) -> None:
         self._allowed_providers = dict(allowed_providers)
+        self._conflict_rules = dict(conflict_rules)
         self._require_fresh = require_fresh
 
     def assess(self, evidence: Sequence[Evidence]) -> EvidenceAssessment:
@@ -183,7 +208,7 @@ class EvidenceTrustPolicy:
                 continue
             accepted.append(item)
 
-        conflicts = detect_conflicts(accepted)
+        conflicts = detect_conflicts(accepted, self._conflict_rules)
         conflicted_ids = {item for conflict in conflicts for item in conflict.evidence_ids}
         accepted_ids = tuple(
             item.evidence_id for item in accepted if item.evidence_id not in conflicted_ids
@@ -193,19 +218,70 @@ class EvidenceTrustPolicy:
         return EvidenceAssessment(accepted_ids, tuple(rejected), conflicts, tuple(gaps))
 
 
-def detect_conflicts(evidence: Sequence[Evidence]) -> tuple[EvidenceConflict, ...]:
-    groups: dict[tuple[str, str], list[Evidence]] = defaultdict(list)
+def detect_conflicts(
+    evidence: Sequence[Evidence],
+    rules: Mapping[str, EvidenceConflictRule],
+) -> tuple[EvidenceConflict, ...]:
+    """按注入规则比较事实字段，忽略 provider 私有 metadata 差异。"""
+
+    groups: dict[tuple[str, str, str, str], list[Evidence]] = defaultdict(list)
     for item in evidence:
-        groups[(item.security.symbol, item.evidence_type)].append(item)
+        groups[
+            (
+                item.security.market.value,
+                item.security.exchange,
+                item.security.symbol,
+                item.evidence_type,
+            )
+        ].append(item)
 
     conflicts: list[EvidenceConflict] = []
-    for (_, evidence_type), items in groups.items():
-        unique_payloads = {item.payload_hash for item in items}
-        if len(items) > 1 and len(unique_payloads) > 1:
+    for (*_, evidence_type), items in groups.items():
+        rule = rules.get(evidence_type)
+        if rule is None or len(items) < 2:
+            continue
+        signatures = tuple(_conflict_signature(item, rule) for item in items)
+        complete = tuple(signature for signature in signatures if signature is not None)
+        if len(complete) > 1 and _has_material_difference(complete, rule.absolute_tolerance):
             conflicts.append(
                 EvidenceConflict(evidence_type, tuple(item.evidence_id for item in items))
             )
     return tuple(conflicts)
+
+
+def _conflict_signature(
+    evidence: Evidence, rule: EvidenceConflictRule
+) -> tuple[FrozenJsonValue, ...] | None:
+    values: list[FrozenJsonValue] = []
+    for path in rule.value_paths:
+        value = _payload_at_path(evidence.payload, path)
+        if value is None:
+            return None
+        values.append(value)
+    return tuple(values)
+
+
+def _payload_at_path(payload: Mapping[str, FrozenJsonValue], path: str) -> FrozenJsonValue:
+    value: FrozenJsonValue = payload
+    for segment in path.split("."):
+        if not isinstance(value, Mapping):
+            return None
+        value = value.get(segment)
+    return value
+
+
+def _has_material_difference(
+    signatures: Sequence[tuple[FrozenJsonValue, ...]], tolerance: float
+) -> bool:
+    baseline = signatures[0]
+    for candidate in signatures[1:]:
+        for left, right in zip(baseline, candidate, strict=True):
+            if isinstance(left, int | float) and isinstance(right, int | float):
+                if abs(float(left) - float(right)) > tolerance:
+                    return True
+            elif left != right:
+                return True
+    return False
 
 
 def validate_claim_citations(claims: Sequence[Claim], evidence: Sequence[Evidence]) -> None:

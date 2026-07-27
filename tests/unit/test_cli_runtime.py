@@ -20,7 +20,8 @@ def test_cli_uses_shared_container_for_run_and_hitl(tmp_path: Path) -> None:
                     Intent.PLANNING,
                     "planning.create_plan",
                     1.0,
-                    (("symbol", "NVDA"),),
+                    reason_code="test_fixture",
+                    entities=(("symbol", "NVDA"),),
                 )
             }
         ),
@@ -60,7 +61,7 @@ def test_cli_uses_shared_container_for_run_and_hitl(tmp_path: Path) -> None:
             "continue",
             "--values",
             (
-                '{"symbol":"NVDA","direction":"买入研究计划",'
+                '{"symbol":"NVDA","exchange":"NYSE","direction":"买入研究计划",'
                 '"horizon":"20 个交易日","entry_condition":"重新站上关键位",'
                 '"invalidation_condition":"跌破失效位","target":"到达目标区间后复核",'
                 '"position_notes":"按风险预算分批","risk_notes":"财报风险"}'

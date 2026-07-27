@@ -267,6 +267,7 @@ class ScanConfiguration:
 
     Attributes:
         version: 配置版本标识。
+        market: 扫描允许的市场代码。
         allowed_exchanges: 允许进入扫描的交易所集合。
         minimum_dollar_volume: 最低平均美元成交额门槛。
         maximum_missing_ratio: 最大特征缺失占比。
@@ -280,6 +281,7 @@ class ScanConfiguration:
     """
 
     version: str
+    market: str
     allowed_exchanges: tuple[str, ...]
     minimum_dollar_volume: float
     maximum_missing_ratio: float
@@ -287,8 +289,8 @@ class ScanConfiguration:
     parameters: Mapping[str, JsonValue]
 
     def __post_init__(self) -> None:
-        if not self.version.strip() or not self.allowed_exchanges:
-            raise ValueError("scan config 必须包含 version 与交易所范围")
+        if not self.version.strip() or not self.market.strip() or not self.allowed_exchanges:
+            raise ValueError("scan config 必须包含 version、market 与交易所范围")
         if self.minimum_dollar_volume < 0 or not math.isfinite(self.minimum_dollar_volume):
             raise ValueError("minimum_dollar_volume 必须是非负有限数值")
         if not 0.0 <= self.maximum_missing_ratio <= 1.0:

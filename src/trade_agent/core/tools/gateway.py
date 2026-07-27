@@ -20,6 +20,7 @@ from .contracts import (
     ToolRequest,
     ToolResult,
 )
+from .identity import bind_trusted_identity, identity_fields_for_manifest
 from .policy import ToolPolicy
 from .schema import JsonSchemaValidator, SchemaValidationError
 
@@ -85,13 +86,20 @@ class DefaultToolGateway:
         if denied is not None:
             return ToolResult("error", error=denied)
         try:
+            trusted_request = bind_trusted_identity(
+                request,
+                identity_fields=identity_fields_for_manifest(tool.manifest),
+                require_context_for_owner_scope=True,
+            )
             # 输入先过 schema，避免 Tool 实现里充斥重复的字段形状判断。
-            self._validator.validate(request.arguments, tool.manifest.input_schema)
+            self._validator.validate(trusted_request.arguments, tool.manifest.input_schema)
         except SchemaValidationError as error:
             return self._failure(ToolErrorCode.INVALID_INPUT, str(error))
+        except ToolExecutionError as error:
+            return self._failure(error.code, error.message, retryable=error.retryable)
 
         try:
-            result = await tool.handle(request)
+            result = await tool.handle(trusted_request)
         except TimeoutError:
             return self._failure(ToolErrorCode.TIMEOUT, "tool 调用超时", retryable=True)
         except ToolExecutionError as error:

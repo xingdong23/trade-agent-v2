@@ -6,6 +6,7 @@ from typing import Protocol
 
 from trade_agent.core.llm.contracts import JsonValue
 from trade_agent.core.tools import ToolManifest, ToolRequest, ToolResult
+from trade_agent.core.tools.identity import bind_trusted_identity, identity_fields_for_manifest
 
 
 class QuantitativeToolApplication(Protocol):
@@ -153,6 +154,10 @@ class GetPredictionTool:
     )
 
     async def handle(self, request: ToolRequest) -> ToolResult:
+        request = bind_trusted_identity(
+            request,
+            identity_fields=identity_fields_for_manifest(self.manifest),
+        )
         _validate_request(request, self.manifest)
         return ToolResult("available", await self.application.get_prediction(request.arguments))
 
@@ -180,6 +185,10 @@ class GetQuantitativeSnapshotTool:
     )
 
     async def handle(self, request: ToolRequest) -> ToolResult:
+        request = bind_trusted_identity(
+            request,
+            identity_fields=identity_fields_for_manifest(self.manifest),
+        )
         _validate_request(request, self.manifest)
         return ToolResult(
             "available", await self.application.get_quantitative_snapshot(request.arguments)
@@ -235,6 +244,10 @@ class SubmitScanTool:
     )
 
     async def handle(self, request: ToolRequest) -> ToolResult:
+        request = bind_trusted_identity(
+            request,
+            identity_fields=identity_fields_for_manifest(self.manifest),
+        )
         _validate_request(request, self.manifest)
         if request.idempotency_key is None or not request.idempotency_key.strip():
             raise ValueError("扫描提交必须提供 idempotency key")
@@ -267,6 +280,10 @@ class GetScanStatusTool:
     )
 
     async def handle(self, request: ToolRequest) -> ToolResult:
+        request = bind_trusted_identity(
+            request,
+            identity_fields=identity_fields_for_manifest(self.manifest),
+        )
         _validate_request(request, self.manifest)
         return ToolResult("available", await self.application.get_scan_status(request.arguments))
 
@@ -294,6 +311,10 @@ class ListScanResultsTool:
     )
 
     async def handle(self, request: ToolRequest) -> ToolResult:
+        request = bind_trusted_identity(
+            request,
+            identity_fields=identity_fields_for_manifest(self.manifest),
+        )
         _validate_request(request, self.manifest)
         return ToolResult("available", await self.application.list_scan_results(request.arguments))
 

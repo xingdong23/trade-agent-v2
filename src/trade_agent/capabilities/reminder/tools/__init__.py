@@ -10,6 +10,7 @@ from trade_agent.capabilities.reminder.contracts import (
 )
 from trade_agent.core.llm.contracts import JsonValue
 from trade_agent.core.tools import ToolManifest, ToolRequest, ToolResult
+from trade_agent.core.tools.identity import bind_trusted_identity, identity_fields_for_manifest
 
 
 class ReminderToolApplication(Protocol):
@@ -91,6 +92,10 @@ class CreateReminderTool:
     )
 
     async def handle(self, request: ToolRequest) -> ToolResult:
+        request = bind_trusted_identity(
+            request,
+            identity_fields=identity_fields_for_manifest(self.manifest),
+        )
         _require_tool(request, self.manifest)
         key = _require_idempotency_key(request)
         result = await self.application.execute(
@@ -136,6 +141,10 @@ class SetReminderStatusTool:
     )
 
     async def handle(self, request: ToolRequest) -> ToolResult:
+        request = bind_trusted_identity(
+            request,
+            identity_fields=identity_fields_for_manifest(self.manifest),
+        )
         _require_tool(request, self.manifest)
         key = _require_idempotency_key(request)
         if request.approval_interaction_id is None or not request.approval_interaction_id.strip():
@@ -171,6 +180,10 @@ class GetReminderTool:
     )
 
     async def handle(self, request: ToolRequest) -> ToolResult:
+        request = bind_trusted_identity(
+            request,
+            identity_fields=identity_fields_for_manifest(self.manifest),
+        )
         _require_tool(request, self.manifest)
         result = await self.application.query(CapabilityQuery("reminder.get", request.arguments))
         return ToolResult("found", result.payload)

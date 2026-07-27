@@ -54,8 +54,49 @@ def _interaction(*, deadline: datetime | None = None) -> HumanInteraction:
     )
 
 
+def test_checkpoint_storage_key_avoids_owner_thread_delimiter_collisions(
+    database: SQLiteDatabase,
+) -> None:
+    checkpointer = SQLiteThreadCheckpointer(database, namespace="test-checkpoint")
+
+    first_checkpoint = empty_checkpoint()
+    first_checkpoint["channel_values"] = {"run_id": "run-collision-a"}
+    checkpointer.put_state(
+        owner_id="owner-a",
+        thread_id="thread:shared",
+        checkpoint=first_checkpoint,
+        metadata={"source": "input", "step": 0, "parents": {}},
+        new_versions={},
+    )
+
+    second_checkpoint = empty_checkpoint()
+    second_checkpoint["channel_values"] = {"run_id": "run-collision-b"}
+    checkpointer.put_state(
+        owner_id="owner-a:thread",
+        thread_id="shared",
+        checkpoint=second_checkpoint,
+        metadata={"source": "input", "step": 0, "parents": {}},
+        new_versions={},
+    )
+
+    first_loaded = checkpointer.get_tuple(owner_id="owner-a", thread_id="thread:shared")
+    second_loaded = checkpointer.get_tuple(owner_id="owner-a:thread", thread_id="shared")
+
+    assert first_loaded is not None
+    assert second_loaded is not None
+    assert first_loaded.checkpoint["channel_values"] == {"run_id": "run-collision-a"}
+    assert second_loaded.checkpoint["channel_values"] == {"run_id": "run-collision-b"}
+    assert (
+        checkpointer.config(owner_id="owner-a", thread_id="thread:shared")["configurable"][
+            "checkpoint_ns"
+        ]
+        == "test-checkpoint"
+    )
+    checkpointer.close()
+
+
 def test_checkpoint_is_owner_scoped_and_survives_reopen(database: SQLiteDatabase) -> None:
-    first = SQLiteThreadCheckpointer(database)
+    first = SQLiteThreadCheckpointer(database, namespace="test-checkpoint")
     first.bind_thread(owner_id="owner-a", thread_id="thread-1")
     checkpoint = empty_checkpoint()
     checkpoint["channel_values"] = {"run_id": "run-1"}
@@ -68,7 +109,7 @@ def test_checkpoint_is_owner_scoped_and_survives_reopen(database: SQLiteDatabase
     )
     first.close()
 
-    reopened = SQLiteThreadCheckpointer(database)
+    reopened = SQLiteThreadCheckpointer(database, namespace="test-checkpoint")
     loaded = reopened.get_tuple(owner_id="owner-a", thread_id="thread-1")
     assert loaded is not None
     assert loaded.checkpoint["channel_values"] == {"run_id": "run-1"}

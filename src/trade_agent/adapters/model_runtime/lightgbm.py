@@ -10,6 +10,13 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
+from trade_agent.capabilities.quantitative.contracts import (
+    LabelSchema,
+    ModelArtifactLineage,
+    ModelTaskSpec,
+    SupervisedTaskType,
+)
+
 ARTIFACT_FORMAT = "trade-agent.lightgbm.v1"
 
 
@@ -36,6 +43,28 @@ class PlattCalibration:
 
 
 @dataclass(frozen=True, slots=True)
+class LightGBMRuntimeSpec:
+    """声明一次 LightGBM 训练的任务语义与 SDK 参数。
+
+    Attributes:
+        task: 与 target、label 和评测协议绑定的领域任务契约。
+        objective: 交给 LightGBM SDK 的显式 objective。
+        metric: 交给 LightGBM SDK 的显式评测 metric。
+
+    Invariants:
+        - objective 与 metric 必须由调用方显式提供，adapter 不猜测。
+    """
+
+    task: ModelTaskSpec
+    objective: str
+    metric: str
+
+    def __post_init__(self) -> None:
+        if not self.objective.strip() or not self.metric.strip():
+            raise ValueError("LightGBM objective 与 metric 必须显式提供")
+
+
+@dataclass(frozen=True, slots=True)
 class LightGBMArtifact:
     """训练后可持久化、可复现的 LightGBM 模型包。
 
@@ -44,14 +73,20 @@ class LightGBMArtifact:
         artifact_hash: Artifact SHA-256 完整性摘要。
         feature_names: 推理时必须保持相同顺序的特征名。
         feature_attribution: 归一化特征重要性。
-        calibration: 独立校准集拟合的 Platt 参数。
+        calibration: 二分类任务使用的 Platt 参数；回归任务为空。
+        runtime_spec: 训练时实际采用的任务、objective 与 metric。
+        effective_parameters: 包含确定性控制项在内的完整生效参数。
+        lineage: 训练任务、数据、特征与代码版本来源。
     """
 
     artifact_bytes: bytes
     artifact_hash: str
     feature_names: tuple[str, ...]
     feature_attribution: Mapping[str, float]
-    calibration: PlattCalibration
+    calibration: PlattCalibration | None
+    runtime_spec: LightGBMRuntimeSpec
+    effective_parameters: Mapping[str, int | float | str | bool]
+    lineage: ModelArtifactLineage
 
 
 class LightGBMTrainer:
@@ -68,19 +103,25 @@ class LightGBMTrainer:
         *,
         feature_names: Sequence[str],
         training_features: Sequence[Sequence[float]],
-        training_labels: Sequence[int],
+        training_labels: Sequence[float],
         calibration_features: Sequence[Sequence[float]],
-        calibration_labels: Sequence[int],
+        calibration_labels: Sequence[float],
+        runtime_spec: LightGBMRuntimeSpec,
+        lineage: ModelArtifactLineage,
         random_seed: int,
         hyperparameters: Mapping[str, int | float | str | bool],
     ) -> LightGBMArtifact:
-        _validate_matrix(feature_names, training_features, training_labels, "训练")
-        _validate_matrix(feature_names, calibration_features, calibration_labels, "校准")
+        _validate_matrix(
+            feature_names, training_features, training_labels, runtime_spec.task, "训练"
+        )
+        _validate_matrix(
+            feature_names, calibration_features, calibration_labels, runtime_spec.task, "校准"
+        )
         lightgbm = _load_lightgbm()
         numpy = _load_numpy()
         parameters: dict[str, int | float | str | bool] = {
-            "objective": "binary",
-            "metric": "binary_logloss",
+            "objective": runtime_spec.objective,
+            "metric": runtime_spec.metric,
             "verbosity": -1,
             "seed": random_seed,
             "feature_fraction_seed": random_seed,
@@ -90,32 +131,55 @@ class LightGBMTrainer:
             "force_col_wise": True,
             "num_threads": 1,
         }
+        reserved = set(parameters).intersection(hyperparameters)
+        if reserved:
+            raise ValueError(
+                "LightGBM 确定性参数必须通过 runtime spec 或 trainer 控制: "
+                + ", ".join(sorted(reserved))
+            )
         parameters.update(hyperparameters)
         rounds = int(parameters.pop("num_boost_round", 40))
         if rounds < 1:
             raise ValueError("num_boost_round 必须为正")
         dataset = lightgbm.Dataset(
             numpy.asarray(training_features, dtype="float64"),
-            label=numpy.asarray(training_labels, dtype="int8"),
+            label=numpy.asarray(training_labels, dtype="float64"),
             feature_name=list(feature_names),
             free_raw_data=False,
         )
         booster = lightgbm.train(parameters, dataset, num_boost_round=rounds)
-        raw_probabilities = tuple(
+        raw_predictions = tuple(
             float(value)
             for value in booster.predict(numpy.asarray(calibration_features, dtype="float64"))
         )
-        calibration = fit_platt_calibration(raw_probabilities, calibration_labels)
+        calibration = (
+            fit_platt_calibration(raw_predictions, calibration_labels)
+            if runtime_spec.task.task_type is SupervisedTaskType.BINARY_CLASSIFICATION
+            else None
+        )
         attribution = _normalised_attribution(
             tuple(feature_names),
             tuple(float(value) for value in booster.feature_importance(importance_type="gain")),
         )
         payload = {
-            "calibration": {"intercept": calibration.intercept, "slope": calibration.slope},
+            "calibration": (
+                {"intercept": calibration.intercept, "slope": calibration.slope}
+                if calibration is not None
+                else None
+            ),
+            "effective_parameters": {**parameters, "num_boost_round": rounds},
             "feature_attribution": attribution,
             "feature_names": list(feature_names),
             "format": ARTIFACT_FORMAT,
+            "lineage": {
+                "code_version": lineage.code_version,
+                "data_snapshot_id": lineage.data_snapshot_id,
+                "feature_set_version": lineage.feature_set_version,
+                "reproducibility_key": lineage.reproducibility_key,
+                "training_job_id": lineage.training_job_id,
+            },
             "model": booster.model_to_string(num_iteration=booster.current_iteration()),
+            "runtime_spec": _runtime_spec_payload(runtime_spec),
         }
         artifact_bytes = _canonical_json(payload)
         return LightGBMArtifact(
@@ -124,6 +188,9 @@ class LightGBMTrainer:
             tuple(feature_names),
             attribution,
             calibration,
+            runtime_spec,
+            cast(dict[str, int | float | str | bool], payload["effective_parameters"]),
+            lineage,
         )
 
 
@@ -132,21 +199,46 @@ class LightGBMPredictor:
         payload = json.loads(artifact)
         if not isinstance(payload, dict) or payload.get("format") != ARTIFACT_FORMAT:
             raise ValueError("不是受支持的 LightGBM model artifact")
-        calibration = cast(dict[str, float], payload["calibration"])
+        calibration = cast(dict[str, float] | None, payload["calibration"])
         self.feature_names = tuple(cast(list[str], payload["feature_names"]))
-        self.calibration = PlattCalibration(
-            float(calibration["slope"]), float(calibration["intercept"])
+        self.calibration = (
+            PlattCalibration(float(calibration["slope"]), float(calibration["intercept"]))
+            if calibration is not None
+            else None
+        )
+        self.runtime_spec = _runtime_spec_from_payload(
+            cast(dict[str, object], payload["runtime_spec"])
+        )
+        self.effective_parameters = cast(
+            dict[str, int | float | str | bool], payload["effective_parameters"]
+        )
+        lineage = cast(dict[str, str], payload["lineage"])
+        self.lineage = ModelArtifactLineage(
+            training_job_id=lineage["training_job_id"],
+            reproducibility_key=lineage["reproducibility_key"],
+            data_snapshot_id=lineage["data_snapshot_id"],
+            feature_set_version=lineage["feature_set_version"],
+            code_version=lineage["code_version"],
         )
         self._booster = _load_lightgbm().Booster(model_str=cast(str, payload["model"]))
 
-    def predict_probabilities(self, features: Sequence[Sequence[float]]) -> tuple[float, ...]:
+    def predict_values(self, features: Sequence[Sequence[float]]) -> tuple[float, ...]:
+        """按 artifact 中声明的任务输出原始预测值。"""
+
         _validate_feature_rows(self.feature_names, features, "inference")
         values = self._booster.predict(_load_numpy().asarray(features, dtype="float64"))
-        return tuple(self.calibration.apply(float(value)) for value in values)
+        return tuple(float(value) for value in values)
+
+    def predict_probabilities(self, features: Sequence[Sequence[float]]) -> tuple[float, ...]:
+        if self.runtime_spec.task.task_type is not SupervisedTaskType.BINARY_CLASSIFICATION:
+            raise ValueError("当前 LightGBM artifact 不是二分类概率模型")
+        if self.calibration is None:
+            raise ValueError("二分类 LightGBM artifact 缺少校准参数")
+        return tuple(self.calibration.apply(value) for value in self.predict_values(features))
 
 
 def fit_platt_calibration(
-    probabilities: Sequence[float], labels: Sequence[int], *, iterations: int = 100
+    probabilities: Sequence[float], labels: Sequence[float], *, iterations: int = 100
 ) -> PlattCalibration:
     """用固定迭代次数的牛顿法拟合一维 Platt scaling。"""
 
@@ -213,14 +305,14 @@ def _load_numpy() -> Any:
 def _validate_matrix(
     feature_names: Sequence[str],
     features: Sequence[Sequence[float]],
-    labels: Sequence[int],
+    labels: Sequence[float],
+    task: ModelTaskSpec,
     purpose: str,
 ) -> None:
     _validate_feature_rows(feature_names, features, purpose)
     if len(features) != len(labels):
         raise ValueError(f"{purpose} feature 与 label 数量不一致")
-    if any(label not in (0, 1) for label in labels):
-        raise ValueError(f"{purpose} label 只能是 0 或 1")
+    task.label_schema.validate(labels, purpose=purpose)
 
 
 def _validate_feature_rows(
@@ -249,6 +341,56 @@ def _canonical_json(value: object) -> bytes:
     return json.dumps(
         value, ensure_ascii=True, allow_nan=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
+
+
+def _runtime_spec_payload(spec: LightGBMRuntimeSpec) -> dict[str, object]:
+    return {
+        "evaluation_protocol": spec.task.evaluation_protocol,
+        "label_schema": {
+            "allowed_values": list(spec.task.label_schema.allowed_values),
+            "maximum": spec.task.label_schema.maximum,
+            "minimum": spec.task.label_schema.minimum,
+            "schema_id": spec.task.label_schema.schema_id,
+        },
+        "metric": spec.metric,
+        "objective": spec.objective,
+        "output_name": spec.task.output_name,
+        "horizon": spec.task.horizon,
+        "target": spec.task.target,
+        "task_type": spec.task.task_type.value,
+    }
+
+
+def _runtime_spec_from_payload(payload: Mapping[str, object]) -> LightGBMRuntimeSpec:
+    label_payload = cast(dict[str, object], payload["label_schema"])
+    task = ModelTaskSpec(
+        target=cast(str, payload["target"]),
+        horizon=cast(str, payload["horizon"]),
+        task_type=SupervisedTaskType(cast(str, payload["task_type"])),
+        label_schema=LabelSchema(
+            schema_id=cast(str, label_payload["schema_id"]),
+            allowed_values=tuple(
+                float(value) for value in cast(list[float], label_payload["allowed_values"])
+            ),
+            minimum=(
+                float(cast(float, label_payload["minimum"]))
+                if label_payload["minimum"] is not None
+                else None
+            ),
+            maximum=(
+                float(cast(float, label_payload["maximum"]))
+                if label_payload["maximum"] is not None
+                else None
+            ),
+        ),
+        output_name=cast(str, payload["output_name"]),
+        evaluation_protocol=cast(str, payload["evaluation_protocol"]),
+    )
+    return LightGBMRuntimeSpec(
+        task=task,
+        objective=cast(str, payload["objective"]),
+        metric=cast(str, payload["metric"]),
+    )
 
 
 def _sigmoid(value: float) -> float:

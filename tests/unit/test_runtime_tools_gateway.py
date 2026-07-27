@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import pytest
 
+from trade_agent.core.llm.contracts import JsonValue
 from trade_agent.core.runtime import AgentState, validate_checkpoint_state
 from trade_agent.core.tools import (
     DefaultToolGateway,
     ManifestToolPolicy,
     ToolErrorCode,
+    ToolExecutionContext,
     ToolExecutionError,
+    ToolExecutionPrincipal,
     ToolManifest,
     ToolRegistry,
     ToolRequest,
@@ -63,6 +66,51 @@ class FailingTool:
             "任意展示文案，不包含供程序识别的关键词",
             retryable=True,
         )
+
+
+@dataclass(slots=True)
+class OwnerScopedEchoTool:
+    seen_arguments: list[dict[str, JsonValue]] = field(default_factory=list)
+
+    manifest = ToolManifest(
+        "test.owner_scoped",
+        "测试 owner 作用域工具的受信身份绑定",
+        False,
+        False,
+        {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["owner_id", "actor_owner_id", "actor_id", "value"],
+            "properties": {
+                "owner_id": {"type": "string", "minLength": 1},
+                "actor_owner_id": {"type": "string", "minLength": 1},
+                "actor_id": {"type": "string", "minLength": 1},
+                "value": {"type": "string", "minLength": 1},
+            },
+        },
+        {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["owner_id", "actor_owner_id", "actor_id", "value"],
+            "properties": {
+                "owner_id": {"type": "string"},
+                "actor_owner_id": {"type": "string"},
+                "actor_id": {"type": "string"},
+                "value": {"type": "string"},
+            },
+        },
+    )
+
+    async def handle(self, request: ToolRequest) -> ToolResult:
+        payload: dict[str, JsonValue] = dict(request.arguments)
+        self.seen_arguments.append(payload)
+        return ToolResult("ok", payload)
+
+
+def _trusted_context(
+    owner_id: str = "owner-a", actor_id: str | None = None
+) -> ToolExecutionContext:
+    return ToolExecutionContext(ToolExecutionPrincipal(owner_id=owner_id, actor_id=actor_id))
 
 
 def _gateway(*allowed_tools: str) -> DefaultToolGateway:
@@ -118,6 +166,98 @@ def test_gateway_uses_typed_error_instead_of_parsing_message() -> None:
     assert result.error.code is ToolErrorCode.UNAVAILABLE
     assert result.error.retryable is True
     assert result.error.message == "任意展示文案，不包含供程序识别的关键词"
+
+
+def test_gateway_rejects_owner_scoped_tool_without_trusted_context() -> None:
+    gateway = DefaultToolGateway(
+        ToolRegistry((OwnerScopedEchoTool(),)),
+        ManifestToolPolicy({"research": frozenset({"test.owner_scoped"})}),
+    )
+
+    result = asyncio.run(
+        gateway.invoke(
+            ToolRequest(
+                "test.owner_scoped",
+                {
+                    "owner_id": "owner-a",
+                    "actor_owner_id": "owner-a",
+                    "actor_id": "owner-a",
+                    "value": "NVDA",
+                },
+                agent_id="research",
+            )
+        )
+    )
+
+    assert result.error is not None
+    assert result.error.code is ToolErrorCode.FORBIDDEN
+    assert "受信执行上下文" in result.error.message
+
+
+def test_gateway_rejects_mismatched_owner_or_actor_identity() -> None:
+    gateway = DefaultToolGateway(
+        ToolRegistry((OwnerScopedEchoTool(),)),
+        ManifestToolPolicy({"research": frozenset({"test.owner_scoped"})}),
+    )
+
+    result = asyncio.run(
+        gateway.invoke(
+            ToolRequest(
+                "test.owner_scoped",
+                {
+                    "owner_id": "owner-b",
+                    "actor_owner_id": "owner-b",
+                    "actor_id": "intruder",
+                    "value": "NVDA",
+                },
+                agent_id="research",
+                context=_trusted_context(owner_id="owner-a", actor_id="owner-a"),
+            )
+        )
+    )
+
+    assert result.error is not None
+    assert result.error.code is ToolErrorCode.FORBIDDEN
+    assert result.error.message in {
+        "owner_id 必须与受信执行主体一致",
+        "actor_owner_id 必须与受信执行主体一致",
+        "actor_id 必须与受信执行主体一致",
+    }
+
+
+def test_gateway_injects_trusted_identity_before_schema_and_handler() -> None:
+    tool = OwnerScopedEchoTool()
+    gateway = DefaultToolGateway(
+        ToolRegistry((tool,)),
+        ManifestToolPolicy({"research": frozenset({"test.owner_scoped"})}),
+    )
+
+    result = asyncio.run(
+        gateway.invoke(
+            ToolRequest(
+                "test.owner_scoped",
+                {"value": "NVDA"},
+                agent_id="research",
+                context=_trusted_context(owner_id="owner-a", actor_id="session-actor"),
+            )
+        )
+    )
+
+    assert result.error is None
+    assert result.payload == {
+        "owner_id": "owner-a",
+        "actor_owner_id": "owner-a",
+        "actor_id": "session-actor",
+        "value": "NVDA",
+    }
+    assert tool.seen_arguments == [
+        {
+            "owner_id": "owner-a",
+            "actor_owner_id": "owner-a",
+            "actor_id": "session-actor",
+            "value": "NVDA",
+        }
+    ]
 
 
 def test_checkpoint_state_rejects_large_or_domain_payload() -> None:

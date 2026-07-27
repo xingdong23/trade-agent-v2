@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -17,8 +19,24 @@ from .schema import ThreadOwnerRecord
 
 
 class SQLiteThreadCheckpointer:
-    def __init__(self, database: SQLiteDatabase) -> None:
+    _STORAGE_KEY_VERSION = "v1"
+
+    def __init__(self, database: SQLiteDatabase, *, namespace: str) -> None:
+        """创建按 owner 隔离的 SQLite checkpoint 适配器。
+
+        Args:
+            database: 已初始化的 SQLite 连接管理器。
+            namespace: 当前部署使用的 LangGraph checkpoint 命名空间。
+
+        Raises:
+            ValueError: ``namespace`` 为空白时抛出。
+        """
+
+        normalized_namespace = namespace.strip()
+        if not normalized_namespace:
+            raise ValueError("checkpoint namespace 不能为空")
         self._database = database
+        self._namespace = normalized_namespace
         self._connection = sqlite3.connect(database.path, check_same_thread=False)
         self._connection.execute("PRAGMA journal_mode=WAL")
         self._connection.execute(f"PRAGMA busy_timeout={database.busy_timeout_ms}")
@@ -63,7 +81,7 @@ class SQLiteThreadCheckpointer:
         return {
             "configurable": {
                 "thread_id": self._storage_thread_id(owner_id, thread_id),
-                "checkpoint_ns": "trade-agent",
+                "checkpoint_ns": self._namespace,
             }
         }
 
@@ -80,7 +98,14 @@ class SQLiteThreadCheckpointer:
 
     @staticmethod
     def _storage_thread_id(owner_id: str, thread_id: str) -> str:
-        return f"{owner_id}:{thread_id}"
+        payload = json.dumps(
+            {"owner_id": owner_id, "thread_id": thread_id},
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        return f"{SQLiteThreadCheckpointer._STORAGE_KEY_VERSION}:sha256:{digest}"
 
 
 __all__ = ["SQLiteThreadCheckpointer"]

@@ -1,5 +1,6 @@
 """美股量化数据、目标与 feature 版本契约。"""
 
+import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -10,6 +11,132 @@ class PredictionTarget(StrEnum):
     RETURN = "return"
     DIRECTION = "direction"
     VOLATILITY = "volatility"
+
+
+class SupervisedTaskType(StrEnum):
+    """声明专用模型训练任务的统计类型。"""
+
+    BINARY_CLASSIFICATION = "binary_classification"
+    REGRESSION = "regression"
+
+
+@dataclass(frozen=True, slots=True)
+class LabelSchema:
+    """定义训练标签允许的数值空间。
+
+    Attributes:
+        schema_id: 可写入模型 lineage 的稳定 schema 标识。
+        allowed_values: 离散任务允许的完整标签集合；连续任务应留空。
+        minimum: 连续标签允许的最小值；不限制时为空。
+        maximum: 连续标签允许的最大值；不限制时为空。
+
+    Invariants:
+        - `schema_id` 不能为空。
+        - 离散值、最小值和最大值都必须是有限数。
+        - 同一 schema 不能同时声明离散集合与连续区间。
+    """
+
+    schema_id: str
+    allowed_values: tuple[float, ...] = ()
+    minimum: float | None = None
+    maximum: float | None = None
+
+    def __post_init__(self) -> None:
+        if not self.schema_id.strip():
+            raise ValueError("label schema_id 不能为空")
+        declared = (*self.allowed_values, self.minimum, self.maximum)
+        if any(value is not None and not math.isfinite(value) for value in declared):
+            raise ValueError("label schema 只允许有限数值")
+        if self.allowed_values and (self.minimum is not None or self.maximum is not None):
+            raise ValueError("label schema 不能同时声明离散集合与连续区间")
+        if self.minimum is not None and self.maximum is not None and self.minimum > self.maximum:
+            raise ValueError("label schema 最小值不能大于最大值")
+
+    def validate(self, values: Sequence[float], *, purpose: str) -> None:
+        """校验一组标签是否满足当前 schema。"""
+
+        if not values:
+            raise ValueError(f"{purpose} label 不能为空")
+        normalized = tuple(float(value) for value in values)
+        if any(not math.isfinite(value) for value in normalized):
+            raise ValueError(f"{purpose} label 不允许 NaN 或无穷值")
+        if self.allowed_values and any(value not in self.allowed_values for value in normalized):
+            raise ValueError(f"{purpose} label 不符合 {self.schema_id}")
+        if self.minimum is not None and any(value < self.minimum for value in normalized):
+            raise ValueError(f"{purpose} label 小于 {self.schema_id} 下限")
+        if self.maximum is not None and any(value > self.maximum for value in normalized):
+            raise ValueError(f"{purpose} label 大于 {self.schema_id} 上限")
+
+
+@dataclass(frozen=True, slots=True)
+class ModelTaskSpec:
+    """把预测目标、任务类型、标签和评测协议绑定为不可变训练契约。
+
+    Attributes:
+        target: 目标稳定标识，例如 direction、return 或 volatility。
+        horizon: 预测周期稳定标识。
+        task_type: 二分类或回归等统计任务类型。
+        label_schema: 训练标签的显式校验规则。
+        output_name: 模型标准输出字段名。
+        evaluation_protocol: 训练产物必须采用的评测协议版本。
+
+    Invariants:
+        - 所有稳定标识不能为空。
+        - 二分类任务必须声明且只能声明两个离散标签。
+        - 回归任务不能声明离散标签集合。
+    """
+
+    target: str
+    horizon: str
+    task_type: SupervisedTaskType
+    label_schema: LabelSchema
+    output_name: str
+    evaluation_protocol: str
+
+    def __post_init__(self) -> None:
+        required = (self.target, self.horizon, self.output_name, self.evaluation_protocol)
+        if any(not value.strip() for value in required):
+            raise ValueError("model task spec 的稳定标识不能为空")
+        if self.task_type is SupervisedTaskType.BINARY_CLASSIFICATION:
+            if len(self.label_schema.allowed_values) != 2:
+                raise ValueError("二分类任务必须声明两个离散 label")
+        elif self.label_schema.allowed_values:
+            raise ValueError("回归任务不能声明离散 label 集合")
+
+
+@dataclass(frozen=True, slots=True)
+class ModelArtifactLineage:
+    """记录模型工件可追溯到的训练任务与数据版本。
+
+    Attributes:
+        training_job_id: 产生该工件的训练任务标识。
+        reproducibility_key: 训练任务规范输入的稳定摘要。
+        data_snapshot_id: point-in-time 训练数据快照标识。
+        feature_set_version: 训练使用的特征集合版本。
+        code_version: 训练代码版本。
+
+    Invariants:
+        - 每个 lineage 字段都必须由训练编排层显式提供。
+    """
+
+    training_job_id: str
+    reproducibility_key: str
+    data_snapshot_id: str
+    feature_set_version: str
+    code_version: str
+
+    def __post_init__(self) -> None:
+        if any(
+            not value.strip()
+            for value in (
+                self.training_job_id,
+                self.reproducibility_key,
+                self.data_snapshot_id,
+                self.feature_set_version,
+                self.code_version,
+            )
+        ):
+            raise ValueError("model artifact lineage 字段不能为空")
 
 
 class AdjustmentPolicy(StrEnum):
@@ -31,8 +158,8 @@ class MarketScope:
         - 交易所范围至少包含一个交易所。
     """
 
-    market: str = "US"
-    exchanges: tuple[str, ...] = ("NASDAQ", "NYSE", "AMEX")
+    market: str
+    exchanges: tuple[str, ...]
 
     def __post_init__(self) -> None:
         if self.market != "US":
@@ -203,22 +330,42 @@ class FeatureVector:
 
 
 @dataclass(frozen=True, slots=True)
+class AdjustmentMetadata:
+    """一行特征输入使用的公司行动复权声明。
+
+    Attributes:
+        policy: 原始、拆股复权或总回报复权策略。
+        version: 生成该复权结果的规则或数据版本。
+        adjusted: 调用方是否确认已按声明策略完成处理。
+
+    Invariants:
+        - Version 必须显式提供，不能用默认值伪造 lineage。
+    """
+
+    policy: AdjustmentPolicy
+    version: str
+    adjusted: bool
+
+    def __post_init__(self) -> None:
+        if not self.version.strip():
+            raise ValueError("复权 metadata 必须包含显式版本")
+
+
+@dataclass(frozen=True, slots=True)
 class FeatureRow:
     """承载单个交易日原始输入字段及质量元数据。
 
     Attributes:
         trading_date: 该行数据对应的交易日。
         values: 原始字段到数值的映射。
+        adjustment: 调用方显式提供的复权策略、版本与完成状态。
         suspended: 该证券在当日是否停牌。
-        corporate_action_adjusted: 是否已按要求完成公司行动复权。
-        adjustment_version: 该行采用的复权版本标识。
     """
 
     trading_date: date
     values: Mapping[str, float | None]
+    adjustment: AdjustmentMetadata
     suspended: bool = False
-    corporate_action_adjusted: bool = True
-    adjustment_version: str = "split.v1"
 
 
 class FeatureQualityError(ValueError):
@@ -244,9 +391,9 @@ class FeatureCalculator:
         for row in rows:
             if calendar is not None:
                 calendar.session_for(row.trading_date)
-            if adjustment_version is not None and row.adjustment_version != adjustment_version:
+            if adjustment_version is not None and row.adjustment.version != adjustment_version:
                 raise FeatureQualityError("feature row 的复权版本不一致")
-            if not row.corporate_action_adjusted:
+            if not row.adjustment.adjusted:
                 raise FeatureQualityError("公司行动尚未按配置规则复权")
             values = (
                 {definition.name: None for definition in feature_set.definitions}
@@ -260,7 +407,9 @@ class FeatureCalculator:
         return tuple(vectors)
 
 
-def default_feature_set() -> FeatureSet:
+def us_equity_core_feature_set() -> FeatureSet:
+    """返回显式命名的首版美股核心特征集快照。"""
+
     def passthrough(name: str) -> Callable[[Mapping[str, float | None]], float | None]:
         return lambda row: row.get(name)
 

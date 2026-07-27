@@ -6,7 +6,11 @@ import pytest
 
 from trade_agent.adapters.notifications import InMemoryNotificationAdapter
 from trade_agent.capabilities.contracts import CapabilityResult
-from trade_agent.capabilities.reminder.application import ReminderApplication, ReminderWorker
+from trade_agent.capabilities.reminder.application import (
+    ReminderApplication,
+    ReminderDeliveryPolicy,
+    ReminderWorker,
+)
 from trade_agent.capabilities.reminder.cards import ReminderCardPresenter
 from trade_agent.capabilities.reminder.domain import (
     DeliveryStatus,
@@ -24,7 +28,23 @@ from trade_agent.capabilities.reminder.tools import (
     GetReminderTool,
     SetReminderStatusTool,
 )
-from trade_agent.core.tools import ToolRequest
+from trade_agent.core.tools import ToolExecutionContext, ToolExecutionPrincipal, ToolRequest
+
+DISCLAIMER = "提醒仅表示条件观察与通知 / 不表示下单或成交。"
+TRIGGER_MESSAGE = "提醒条件已满足: 这只是条件观察 / 不表示已下单或成交。"
+
+
+def _delivery_policy(
+    *, max_attempts: int = 3, retry_delays: tuple[float, ...] = (0.0, 0.0)
+) -> ReminderDeliveryPolicy:
+    return ReminderDeliveryPolicy(
+        "test-reminder-delivery.v1",
+        "test.reminder.triggered.v1",
+        max_attempts,
+        retry_delays,
+        "notification unavailable",
+        TRIGGER_MESSAGE,
+    )
 
 
 class FakeReminderRepository:
@@ -127,19 +147,21 @@ def test_three_rule_types_have_deterministic_trigger_semantics() -> None:
     assert not should_trigger(price, above, previous=None, latest_trigger=None)
 
     scheduled = ReminderRule(
-        "scheduled-1",
-        "owner-1",
-        "plan-1",
-        1,
-        ReminderStatus.ACTIVE,
-        ReminderRuleType.SCHEDULED_REVIEW,
-        {"scheduled_at": at.isoformat()},
+        reminder_id="scheduled-1",
+        owner_id="owner-1",
+        plan_id="plan-1",
+        version=1,
+        status=ReminderStatus.ACTIVE,
+        rule_type=ReminderRuleType.SCHEDULED_REVIEW,
+        condition={"scheduled_at": at.isoformat()},
+        notification_channel="test_channel",
+        cooldown=timedelta(),
         approved_by="owner-1",
         approved_payload_hash="approved-hash",
     )
     scheduled_observation = ReminderObservation("scheduled-1", at, "clock-1", None)
     assert should_trigger(scheduled, scheduled_observation, previous=None, latest_trigger=None)
-    prior_trigger = build_trigger(scheduled, scheduled_observation)
+    prior_trigger = build_trigger(scheduled, scheduled_observation, message=TRIGGER_MESSAGE)
     assert not should_trigger(
         scheduled,
         replace(scheduled_observation, observation_reference="clock-2"),
@@ -148,13 +170,15 @@ def test_three_rule_types_have_deterministic_trigger_semantics() -> None:
     )
 
     invalidation = ReminderRule(
-        "invalidation-1",
-        "owner-1",
-        "plan-1",
-        1,
-        ReminderStatus.ACTIVE,
-        ReminderRuleType.INVALIDATION,
-        {"condition_key": "close_below_support"},
+        reminder_id="invalidation-1",
+        owner_id="owner-1",
+        plan_id="plan-1",
+        version=1,
+        status=ReminderStatus.ACTIVE,
+        rule_type=ReminderRuleType.INVALIDATION,
+        condition={"condition_key": "close_below_support"},
+        notification_channel="test_channel",
+        cooldown=timedelta(),
         approved_by="owner-1",
         approved_payload_hash="approved-hash",
     )
@@ -205,7 +229,9 @@ def test_worker_applies_crossing_cooldown_dedupe_and_bounded_delivery_retry() ->
         ]
     )
     notifications = InMemoryNotificationAdapter(failures_before_success=2)
-    worker = ReminderWorker(repository, observations, notifications)
+    worker = ReminderWorker(
+        repository, observations, notifications, delivery_policy=_delivery_policy()
+    )
 
     assert asyncio.run(worker.run_once(now=at)) == ()
     triggered = asyncio.run(worker.run_once(now=at + timedelta(minutes=1)))
@@ -213,7 +239,7 @@ def test_worker_applies_crossing_cooldown_dedupe_and_bounded_delivery_retry() ->
     assert triggered[0].delivery_status is DeliveryStatus.DELIVERED
     assert triggered[0].delivery_attempts == 3
     assert triggered[0].indicates_execution is False
-    assert "不表示已下单或成交" in triggered[0].message
+    assert triggered[0].message == TRIGGER_MESSAGE
     assert len(repository.triggers) == 1
     assert len(notifications.attempts) == 3
 
@@ -240,8 +266,7 @@ def test_worker_records_failed_delivery_after_retry_budget() -> None:
         repository,
         observations,
         notifications,
-        max_delivery_attempts=2,
-        retry_delays=(0.0,),
+        delivery_policy=_delivery_policy(max_attempts=2, retry_delays=(0.0,)),
     )
 
     result = asyncio.run(worker.run_once(now=at + timedelta(minutes=1)))
@@ -253,15 +278,15 @@ def test_worker_records_failed_delivery_after_retry_budget() -> None:
 
 def test_reminder_tools_declare_hitl_and_idempotency_metadata() -> None:
     repository = FakeReminderRepository()
-    application = ReminderApplication(repository)
+    application = ReminderApplication(repository, execution_disclaimer=DISCLAIMER)
     create = CreateReminderTool(application)
     transition = SetReminderStatusTool(application)
     get = GetReminderTool(application)
+    context = ToolExecutionContext(ToolExecutionPrincipal(owner_id="owner-1"))
     create_request = ToolRequest(
         "reminder.create",
         {
             "reminder_id": "reminder-1",
-            "owner_id": "owner-1",
             "plan_id": "plan-1",
             "rule_type": "price_threshold",
             "condition": {
@@ -273,6 +298,7 @@ def test_reminder_tools_declare_hitl_and_idempotency_metadata() -> None:
             "cooldown_seconds": 300,
         },
         idempotency_key="create-key",
+        context=context,
     )
     drafted = asyncio.run(create.handle(create_request))
     replay = asyncio.run(create.handle(create_request))
@@ -288,13 +314,12 @@ def test_reminder_tools_declare_hitl_and_idempotency_metadata() -> None:
                     "reminder.set_status",
                     {
                         "reminder_id": "reminder-1",
-                        "owner_id": "owner-1",
                         "target_status": "active",
                         "approved": True,
-                        "actor_id": "owner-1",
                         "payload_hash": "hash-1",
                     },
                     idempotency_key="activate-key",
+                    context=context,
                 )
             )
         )
@@ -304,21 +329,18 @@ def test_reminder_tools_declare_hitl_and_idempotency_metadata() -> None:
                 "reminder.set_status",
                 {
                     "reminder_id": "reminder-1",
-                    "owner_id": "owner-1",
                     "target_status": "active",
                     "approved": True,
-                    "actor_id": "owner-1",
                     "payload_hash": "hash-1",
                 },
                 idempotency_key="activate-key",
                 approval_interaction_id="approval-1",
+                context=context,
             )
         )
     )
     found = asyncio.run(
-        get.handle(
-            ToolRequest("reminder.get", {"reminder_id": "reminder-1", "owner_id": "owner-1"})
-        )
+        get.handle(ToolRequest("reminder.get", {"reminder_id": "reminder-1"}, context=context))
     )
     assert activated.payload["status"] == "active"
     assert found.payload["status"] == "active"
@@ -342,7 +364,7 @@ def test_reminder_and_unsupported_cards_are_allowlisted_and_deterministic() -> N
                     "direction": "crosses_above",
                 },
                 "notification_channel": "in_app",
-                "execution_disclaimer": "提醒仅表示条件观察与通知 / 不表示下单或成交。",
+                "execution_disclaimer": DISCLAIMER,
             },
         )
     )

@@ -14,6 +14,7 @@ from pathlib import Path
 
 from langgraph.graph.state import CompiledStateGraph
 
+from trade_agent.adapters.llm.litellm import LiteLLMClient, LiteLLMRouteConfig
 from trade_agent.adapters.market_providers import FakeMarketProvider
 from trade_agent.adapters.observability import StructuredTracer
 from trade_agent.adapters.sqlite import (
@@ -32,38 +33,17 @@ from trade_agent.apps.journeys import (
     PlanningJourneyConfig,
     ResearchJourneyBackend,
     ResearchToPlanJourney,
-)
-from trade_agent.capabilities.market_research.tools import (
-    ResearchSecurityTool,
-    ResearchThemeTool,
-    ResolveSecurityTool,
+    planning_journey_config_from_settings,
+    research_to_plan_journey_config_from_settings,
 )
 from trade_agent.capabilities.planning.application import PlanningService
+from trade_agent.capabilities.planning.cards import PlanningCardPresenter
 from trade_agent.capabilities.planning.tools import (
     CreatePlanDraftTool,
     RecordPlanningReviewTool,
     TransitionPlanTool,
 )
-from trade_agent.capabilities.quantitative.tools import (
-    GetPredictionTool,
-    GetQuantitativeSnapshotTool,
-    GetScanStatusTool,
-    ListScanResultsTool,
-    SubmitScanTool,
-)
-from trade_agent.capabilities.reminder.tools import (
-    CreateReminderTool,
-    GetReminderTool,
-    SetReminderStatusTool,
-)
-from trade_agent.capabilities.strategy.tools import PublishStrategyTool
-from trade_agent.capabilities.watchlist.tools import (
-    AcceptClassificationSuggestionTool,
-    ApproveWatchlistImportTool,
-    FreezeUniverseTool,
-    ValidateWatchlistImportTool,
-)
-from trade_agent.core.config import AppSettings
+from trade_agent.core.config import AppEnvironment, AppSettings
 from trade_agent.core.hitl import DefaultHitlService
 from trade_agent.core.llm import LLMClient
 from trade_agent.core.runtime import (
@@ -77,6 +57,7 @@ from trade_agent.core.tools import (
     DefaultToolGateway,
     ManifestToolPolicy,
     ToolGateway,
+    ToolProtocol,
     ToolRegistry,
 )
 
@@ -104,6 +85,7 @@ class ApplicationContainer:
         market_provider: 可替换行情 provider。
         capability_tool_ids: 当前版本声明的 Tool ID 集合。
         worker_ids: 当前部署声明的 worker ID 集合。
+        resource_names: 当前部署通过通用 API 暴露的资源目录。
     """
 
     graph: CompiledStateGraph[AgentState, None, AgentState, AgentState]
@@ -121,45 +103,31 @@ class ApplicationContainer:
     market_provider: object | None = None
     capability_tool_ids: tuple[str, ...] = ()
     worker_ids: tuple[str, ...] = ()
+    resource_names: tuple[str, ...] = ()
 
 
-_TOOL_TYPES = (
-    ResolveSecurityTool,
-    ResearchSecurityTool,
-    ResearchThemeTool,
-    GetPredictionTool,
-    GetQuantitativeSnapshotTool,
-    SubmitScanTool,
-    GetScanStatusTool,
-    ListScanResultsTool,
-    ValidateWatchlistImportTool,
-    ApproveWatchlistImportTool,
-    AcceptClassificationSuggestionTool,
-    FreezeUniverseTool,
-    PublishStrategyTool,
-    CreatePlanDraftTool,
-    TransitionPlanTool,
-    RecordPlanningReviewTool,
-    CreateReminderTool,
-    SetReminderStatusTool,
-    GetReminderTool,
-)
-_CAPABILITY_TOOL_IDS = tuple(tool_type.manifest.tool_id for tool_type in _TOOL_TYPES)
-
-
-def build_scaffold_container() -> ApplicationContainer:
+def build_scaffold_container(
+    *,
+    agents: Iterable[AgentManifest] = BUSINESS_AGENTS,
+    capability_tools: Iterable[ToolProtocol] = (),
+    worker_ids: Iterable[str] = (),
+    resource_names: Iterable[str] = (),
+) -> ApplicationContainer:
     """创建不访问数据库和外部服务的最小容器。
 
     该入口供架构测试和教学演示使用。LLM 与工具调用都使用确定性 fake，因此
     不应该把它当作生产启动方式。
     """
+    resolved_agents = tuple(agents)
+    resolved_tools = tuple(capability_tools)
     return ApplicationContainer(
-        graph=build_supervisor_graph(),
-        agents=BUSINESS_AGENTS,
+        graph=build_supervisor_graph(resolved_agents),
+        agents=resolved_agents,
         llm_client=FakeLLMClient(),
         tool_gateway=FakeToolGateway(),
-        capability_tool_ids=_CAPABILITY_TOOL_IDS,
-        worker_ids=("scan-worker", "reminder-worker"),
+        capability_tool_ids=tuple(tool.manifest.tool_id for tool in resolved_tools),
+        worker_ids=tuple(worker_ids),
+        resource_names=tuple(resource_names),
     )
 
 
@@ -173,6 +141,10 @@ def build_application_container(
     intent_classifier: IntentClassifier | None = None,
     conversation_journeys: Iterable[ConversationJourney] | None = None,
     planning_journey_config: PlanningJourneyConfig | None = None,
+    agents: Iterable[AgentManifest] | None = None,
+    capability_tools: Iterable[ToolProtocol] | None = None,
+    worker_ids: Iterable[str] | None = None,
+    resource_names: Iterable[str] | None = None,
 ) -> ApplicationContainer:
     """按照配置连接应用运行时，并允许测试替换外部依赖。
 
@@ -193,23 +165,47 @@ def build_application_container(
         Path(settings.database.path), busy_timeout_ms=settings.database.busy_timeout_ms
     )
     database.initialize()
-    graph = build_supervisor_graph()
+    resolved_agents = tuple(agents) if agents is not None else BUSINESS_AGENTS
+    graph = build_supervisor_graph(resolved_agents)
     event_store = SQLiteEventStore(database)
     hitl_service = DefaultHitlService(SQLiteHitlRepository(database))
-    checkpointer = SQLiteThreadCheckpointer(database)
+    checkpointer = SQLiteThreadCheckpointer(
+        database,
+        namespace=settings.checkpoint.namespace,
+    )
     planning = PlanningService()
+    resolved_planning_journey_config = planning_journey_config or (
+        planning_journey_config_from_settings(
+            settings.planning_journey,
+            settings.market,
+            settings.hitl,
+        )
+    )
     tracer = StructuredTracer()
     # Tool 是 Agent 可调用的受控业务入口；Service 本身不会直接暴露给 Agent。
-    planning_tools = (
+    planning_tools: tuple[ToolProtocol, ...] = (
         CreatePlanDraftTool(planning),
         TransitionPlanTool(planning),
         RecordPlanningReviewTool(planning),
     )
+    resolved_tools = tuple(capability_tools) if capability_tools is not None else planning_tools
+    tool_registry = ToolRegistry(resolved_tools)
+    agent_tool_allowlists = {
+        item.agent_id: frozenset(item.allowed_tool_ids) for item in resolved_agents
+    }
+    unknown_policy_agents = set(settings.agent_tool_policy.allowlists) - set(agent_tool_allowlists)
+    if unknown_policy_agents:
+        unknown = ", ".join(sorted(unknown_policy_agents))
+        raise ValueError(f"Agent Tool policy 引用了未注册 Agent: {unknown}")
+    agent_tool_allowlists.update(
+        {
+            agent_id: frozenset(tool_ids)
+            for agent_id, tool_ids in settings.agent_tool_policy.allowlists.items()
+        }
+    )
     resolved_gateway = tool_gateway or DefaultToolGateway(
-        ToolRegistry(planning_tools),
-        ManifestToolPolicy(
-            {item.agent_id: frozenset(item.allowed_tool_ids) for item in BUSINESS_AGENTS}
-        ),
+        tool_registry,
+        ManifestToolPolicy(agent_tool_allowlists),
     )
     # 会话运行时位于最外层，负责把 Graph、HITL、事件和业务能力串成一条流程。
     conversation_runtime = ConversationRunService(
@@ -219,6 +215,7 @@ def build_application_container(
         event_store=event_store,
         hitl_service=hitl_service,
         intent_classifier=intent_classifier or ClarificationIntentClassifier(),
+        unregistered_journey_message=(settings.conversation_runtime.unregistered_journey_message),
         tracer=tracer,
     )
     # 默认集合只是当前产品预置；部署方可以注入任意完整 Journey 插件集合。
@@ -228,7 +225,7 @@ def build_application_container(
             PlanningConversationJourney(
                 planning=planning,
                 hitl_service=hitl_service,
-                config=planning_journey_config,
+                config=resolved_planning_journey_config,
             )
         ]
         if research_journey is not None:
@@ -237,6 +234,14 @@ def build_application_container(
                     backend=research_journey,
                     planning=planning,
                     hitl_service=hitl_service,
+                    interaction_ttl_seconds=settings.hitl.pending_ttl_seconds,
+                    text_field_max_length=settings.hitl.text_field_max_length,
+                    config=research_to_plan_journey_config_from_settings(
+                        settings.research_to_plan_journey
+                    ),
+                    presenter=PlanningCardPresenter(
+                        resolved_planning_journey_config.presenter_config
+                    ),
                 )
             )
         resolved_journeys = tuple(defaults)
@@ -244,10 +249,16 @@ def build_application_container(
         resolved_journeys = tuple(conversation_journeys)
     for journey in resolved_journeys:
         conversation_runtime.register_conversation_journey(journey)
+    resolved_llm = llm_client or _build_llm_client(settings)
+    resolved_market_provider = market_provider
+    if resolved_market_provider is None:
+        if settings.environment is AppEnvironment.PRODUCTION:
+            raise ValueError("production 必须显式注入真实 market provider")
+        resolved_market_provider = FakeMarketProvider(())
     return ApplicationContainer(
         graph=graph,
-        agents=BUSINESS_AGENTS,
-        llm_client=llm_client or FakeLLMClient(),
+        agents=resolved_agents,
+        llm_client=resolved_llm,
         tool_gateway=resolved_gateway,
         database=database,
         event_store=event_store,
@@ -257,10 +268,39 @@ def build_application_container(
         conversation_runtime=conversation_runtime,
         research_journey=research_journey,
         tracer=tracer,
-        market_provider=market_provider or FakeMarketProvider(()),
-        capability_tool_ids=_CAPABILITY_TOOL_IDS,
-        worker_ids=("scan-worker", "reminder-worker"),
+        market_provider=resolved_market_provider,
+        capability_tool_ids=tuple(manifest.tool_id for manifest in tool_registry.manifests()),
+        worker_ids=tuple(worker_ids) if worker_ids is not None else settings.worker.worker_ids,
+        resource_names=(
+            tuple(resource_names) if resource_names is not None else settings.api.resource_names
+        ),
     )
+
+
+def _build_llm_client(settings: AppSettings) -> LLMClient:
+    """根据类型化路由配置选择真实 LiteLLM adapter 或本地 fake。
+
+    Production 已由 ``AppSettings`` 强制要求至少一个路由，因此不会静默落到 fake。
+    Development/Test 未配置路由时保留确定性 fake，便于离线教学与测试。
+    """
+
+    if not settings.litellm.routes:
+        return FakeLLMClient()
+    routes = {
+        route_name: LiteLLMRouteConfig(
+            logical_route=route_name,
+            endpoint=route.endpoint,
+            timeout_seconds=route.timeout_seconds,
+            max_tokens=route.max_tokens,
+            allowed_providers=frozenset(route.allowed_providers),
+            concurrency_limit=route.concurrency_limit,
+            max_attempts=route.max_attempts,
+            budget_usd=route.budget_usd,
+            fallback_endpoints=route.fallback_endpoints,
+        )
+        for route_name, route in settings.litellm.routes.items()
+    }
+    return LiteLLMClient(routes)
 
 
 __all__ = ["ApplicationContainer", "build_application_container", "build_scaffold_container"]

@@ -15,12 +15,15 @@ from .planning import (
     PlanningJourneyConfig,
     PlanningOperationSpec,
     default_planning_journey_config,
+    planning_journey_config_from_settings,
+    planning_presenter_config_from_settings,
 )
 from .research_to_plan import (
     ResearchJourneyBackend,
     ResearchJourneyResult,
     ResearchToPlanJourney,
     SecurityCandidate,
+    research_to_plan_journey_config_from_settings,
 )
 
 __all__ = [
@@ -36,4 +39,7 @@ __all__ = [
     "ResearchToPlanJourney",
     "SecurityCandidate",
     "default_planning_journey_config",
+    "planning_journey_config_from_settings",
+    "planning_presenter_config_from_settings",
+    "research_to_plan_journey_config_from_settings",
 ]

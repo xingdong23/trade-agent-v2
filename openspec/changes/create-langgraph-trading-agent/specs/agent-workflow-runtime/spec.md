@@ -37,6 +37,21 @@ capability service。新增旅程 MUST 能在不修改通用运行时的情况�
 - **WHEN** 用户消息无法可靠分类，或分类结果指向未注册的 journey ID
 - **THEN** 系统 fail closed 并返回通用澄清或不支持 Card，不得通过关键词、相似字符串或默认业务动作猜测用户意图
 
+### Requirement: 类型化部署策略与稳定协议边界
+系统 MUST 通过唯一类型化配置入口管理数据库、checkpoint namespace、认证、模型端点、worker、提醒渠道、市场目录、Agent Tool 授权、Journey 业务目录和用户可见策略文案，并由 composition root 显式注入生产对象。实现层不得以固定证券、用户、租户、模型、策略、部署地址、自然语言短语或伪造 lineage 作为隐式 fallback。稳定协议 ID、Card kind、event type、schema version、领域状态机和产品市场边界 MUST 集中注册和校验，不得开放为未经校验的任意配置。
+
+#### Scenario: 部署方覆盖 Research-to-plan 策略
+- **WHEN** 部署配置修改提醒渠道、复盘资源目录、计划 lineage 类型或 Planning 字段目录
+- **THEN** composition root 将同一份配置注入 Journey 与 presenter，所有入口使用一致策略，且实现层不存在第二套静默默认
+
+#### Scenario: 配置引用未知 Agent 或 Worker
+- **WHEN** 部署级 Tool allowlist 或 worker 目录引用未注册协议 ID
+- **THEN** 应用启动失败并报告未知 ID，不得回退到相似名称或开放全部能力
+
+#### Scenario: 保留版本化协议常量
+- **WHEN** 系统处理 Card kind、event type、schema version 或量化评测协议
+- **THEN** 只接受 catalog、registry 或 enum 中已注册的稳定值，并拒绝未知版本，而不是把协议值当作自由业务配置
+
 ### Requirement: 流式进度与结构化结果
 系统 MUST 按顺序流式输出 graph 进度、assistant 文本、tool 状态、HITL 请求、结构化 artifact、完成和失败事件。客户端重连后必须能从先前已接收的 event cursor 继续。
 
@@ -76,7 +91,7 @@ capability service。新增旅程 MUST 能在不修改通用运行时的情况�
 
 #### Scenario: 客户端刷新后恢复卡片
 - **WHEN** Web 客户端刷新或携带 event cursor 重新连接
-- **THEN** 系统通过 pending HITL、artifact/job query 和后续 SSE event 重建最新卡片状态，不依赖客户端原有内存
+- **THEN** 系统通过 owner 隔离的 conversation snapshot 与后续 SSE event 重建消息、最新 Card、pending HITL 和资源状态，不依赖客户端原有内存或猜测多套资源 URL
 
 #### Scenario: 客户端不支持卡片版本
 - **WHEN** 客户端收到 CardCatalog 中存在但本地 renderer 不支持的 `kind + schema_version`

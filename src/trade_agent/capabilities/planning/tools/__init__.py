@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from trade_agent.capabilities.planning.application import PlanningService
 from trade_agent.core.llm.contracts import JsonValue
 from trade_agent.core.tools import ToolManifest, ToolRequest, ToolResult
+from trade_agent.core.tools.identity import bind_trusted_identity, identity_fields_for_manifest
 
 _OBJECT_OUTPUT: dict[str, JsonValue] = {"type": "object", "additionalProperties": True}
 _LINEAGE_SCHEMA: dict[str, JsonValue] = {
@@ -83,6 +84,10 @@ class CreatePlanDraftTool:
     )
 
     async def handle(self, request: ToolRequest) -> ToolResult:
+        request = bind_trusted_identity(
+            request,
+            identity_fields=identity_fields_for_manifest(self.manifest),
+        )
         _validate(request, self.manifest)
         idempotency_key = _idempotency_key(request)
         payload = self.application.create_draft_from_mapping(
@@ -136,6 +141,10 @@ class TransitionPlanTool:
     )
 
     async def handle(self, request: ToolRequest) -> ToolResult:
+        request = bind_trusted_identity(
+            request,
+            identity_fields=identity_fields_for_manifest(self.manifest),
+        )
         _validate(request, self.manifest)
         idempotency_key = _idempotency_key(request)
         approval_id = _approval_interaction_id(request)
@@ -211,6 +220,10 @@ class RecordPlanningReviewTool:
     )
 
     async def handle(self, request: ToolRequest) -> ToolResult:
+        request = bind_trusted_identity(
+            request,
+            identity_fields=identity_fields_for_manifest(self.manifest),
+        )
         _validate(request, self.manifest)
         payload = self.application.record_review_from_mapping(
             request.arguments,

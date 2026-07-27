@@ -10,15 +10,35 @@
 
 from collections.abc import Callable, Hashable
 
+from langchain_core.runnables import RunnableLambda
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from trade_agent.core.runtime import (
+    DEFAULT_CLARIFICATION_AGENT_ID,
+    AgentManifest,
+    AgentRouteRegistry,
     AgentState,
     ErrorSummary,
     Intent,
     IntentSchema,
+    normalize_route_intent,
     validate_checkpoint_state,
+)
+
+type RouteRegistrations = AgentRouteRegistry | tuple[AgentManifest, ...]
+
+_CORE_NODE_IDS = frozenset(
+    {
+        "ingest",
+        "classify",
+        "resolve_context",
+        "route",
+        DEFAULT_CLARIFICATION_AGENT_ID,
+        "policy_gate",
+        "execute_command",
+        "render",
+    }
 )
 
 
@@ -60,37 +80,33 @@ def resolve_context(state: AgentState) -> AgentState:
 def route(state: AgentState) -> AgentState:
     """把结构化意图映射为具体 Agent 节点名。"""
 
-    intent = state.get("intent", Intent.CLARIFICATION)
-    return {"selected_agent_id": intent.value}
+    return {"selected_agent_id": normalize_route_intent(state.get("intent"))}
 
 
-def select_route(state: AgentState) -> str:
-    """为 LangGraph 条件边选择有效路由。
+def _make_route_selector(registry: AgentRouteRegistry) -> Callable[[AgentState], str]:
+    """返回一个只允许跳转到已注册业务节点的条件边选择器。
 
     即使状态里被写入了未知字符串，也会回退到 clarification，保证图不会跳到
     未注册节点。
     """
 
-    selected = state.get("selected_agent_id", Intent.CLARIFICATION.value)
-    if selected not in {intent.value for intent in Intent}:
-        return Intent.CLARIFICATION.value
-    return selected
+    def select_route(state: AgentState) -> str:
+        return registry.resolve(state.get("selected_agent_id"))
+
+    return select_route
 
 
-def research(_: AgentState) -> AgentState:
-    return {"selected_agent_id": "research"}
+def _build_route_node(agent_id: str) -> Callable[[AgentState], AgentState]:
+    """为一个业务 Agent 生成无副作用的固定路由节点。"""
 
+    def route_to_agent(_: AgentState) -> AgentState:
+        return {"selected_agent_id": agent_id}
 
-def strategy(_: AgentState) -> AgentState:
-    return {"selected_agent_id": "strategy"}
-
-
-def planning(_: AgentState) -> AgentState:
-    return {"selected_agent_id": "planning"}
+    return route_to_agent
 
 
 def clarification(_: AgentState) -> AgentState:
-    return {"selected_agent_id": "clarification"}
+    return {"selected_agent_id": DEFAULT_CLARIFICATION_AGENT_ID}
 
 
 def policy_gate(state: AgentState) -> AgentState:
@@ -98,7 +114,7 @@ def policy_gate(state: AgentState) -> AgentState:
 
     if "error_summary" in state:
         return {"policy_decision": "denied"}
-    if state.get("selected_agent_id") == Intent.CLARIFICATION.value:
+    if state.get("selected_agent_id") == DEFAULT_CLARIFICATION_AGENT_ID:
         return {"policy_decision": "clarification_required"}
     return {"policy_decision": "allowed"}
 
@@ -130,11 +146,34 @@ def _add_node(
     name: str,
     node: Callable[[AgentState], AgentState],
 ) -> None:
-    # LangGraph 1.2 的方法级 NodeInputT overload 会被 mypy 推断为 Never。
-    builder.add_node(name, node)  # type: ignore[call-overload]
+    # RunnableLambda 保留动态注册能力，同时为 LangGraph 暴露明确的输入输出类型。
+    builder.add_node(name, RunnableLambda[AgentState, AgentState](node))
 
 
-def build_supervisor_graph() -> CompiledStateGraph[AgentState, None, AgentState, AgentState]:
+def _resolve_route_registry(routes: RouteRegistrations | None) -> AgentRouteRegistry:
+    """把调用方传入的注册配置统一收敛为 ``AgentRouteRegistry``。"""
+
+    if routes is None:
+        from . import ROUTE_REGISTRY
+
+        return ROUTE_REGISTRY
+    if isinstance(routes, AgentRouteRegistry):
+        return routes
+    return AgentRouteRegistry.from_manifests(routes)
+
+
+def _validate_route_node_ids(registry: AgentRouteRegistry) -> None:
+    """拒绝与 Supervisor 核心节点同名的业务 Agent ID。"""
+
+    conflicts = sorted(_CORE_NODE_IDS & set(registry.route_ids))
+    if conflicts:
+        joined = ", ".join(conflicts)
+        raise ValueError(f"业务 Agent ID 与 Supervisor 核心节点冲突: {joined}")
+
+
+def build_supervisor_graph(
+    routes: RouteRegistrations | None = None,
+) -> CompiledStateGraph[AgentState, None, AgentState, AgentState]:
     """按固定顺序构造 Supervisor 图。
 
     阅读顺序可以理解为：
@@ -144,20 +183,21 @@ def build_supervisor_graph() -> CompiledStateGraph[AgentState, None, AgentState,
     这条链路只回答“该由谁处理”和“允不允许继续”，不回答具体业务规则。
     """
 
+    registry = _resolve_route_registry(routes)
+    _validate_route_node_ids(registry)
+
     builder: StateGraph[AgentState, None, AgentState, AgentState] = StateGraph(AgentState)
     nodes = {
         "ingest": ingest,
         "classify": classify,
         "resolve_context": resolve_context,
         "route": route,
-        "research": research,
-        "strategy": strategy,
-        "planning": planning,
         "clarification": clarification,
         "policy_gate": policy_gate,
         "execute_command": execute_command,
         "render": render,
     }
+    nodes.update({agent_id: _build_route_node(agent_id) for agent_id in registry.route_ids})
     for name, node in nodes.items():
         _add_node(builder, name, node)
 
@@ -165,9 +205,10 @@ def build_supervisor_graph() -> CompiledStateGraph[AgentState, None, AgentState,
     builder.add_edge("ingest", "classify")
     builder.add_edge("classify", "resolve_context")
     builder.add_edge("resolve_context", "route")
-    routes: dict[Hashable, str] = {intent.value: intent.value for intent in Intent}
-    builder.add_conditional_edges("route", select_route, routes)
-    for route_node in routes.values():
+    route_map: dict[Hashable, str] = {agent_id: agent_id for agent_id in registry.route_ids}
+    route_map[DEFAULT_CLARIFICATION_AGENT_ID] = DEFAULT_CLARIFICATION_AGENT_ID
+    builder.add_conditional_edges("route", _make_route_selector(registry), route_map)
+    for route_node in route_map.values():
         builder.add_edge(route_node, "policy_gate")
     builder.add_conditional_edges(
         "policy_gate",

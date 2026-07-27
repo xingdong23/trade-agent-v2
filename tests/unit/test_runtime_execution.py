@@ -11,6 +11,7 @@ from trade_agent.core.runtime import (
     NodeExecutionPolicy,
     NodeExecutor,
     execute_idempotent_command,
+    map_node_error,
 )
 
 
@@ -28,7 +29,9 @@ def test_node_executor_retries_bounded_provider_failures() -> None:
             raise TemporaryError("down")
         return {"status": "ok"}
 
-    result = asyncio.run(NodeExecutor(NodeExecutionPolicy(max_attempts=3)).run(operation))
+    result = asyncio.run(
+        NodeExecutor(NodeExecutionPolicy(timeout_seconds=30.0, max_attempts=3)).run(operation)
+    )
     assert result == {"status": "ok"}
     assert attempts == 3
 
@@ -44,6 +47,17 @@ def test_node_executor_emits_terminal_timeout() -> None:
         )
     assert failure.value.code is NodeErrorCode.RETRY_EXHAUSTED
     assert failure.value.attempts == 2
+
+
+def test_node_error_mapping_never_uses_error_code_substrings() -> None:
+    class UnregisteredError(RuntimeError):
+        code = "vendor_timeout_warning"
+        retryable = True
+
+    mapped = map_node_error(UnregisteredError("timeout 只是展示文本"), attempts=1)
+
+    assert mapped.code is NodeErrorCode.INTERNAL
+    assert not mapped.retryable
 
 
 def test_idempotent_command_reuses_committed_result_after_checkpoint_gap(tmp_path: Path) -> None:

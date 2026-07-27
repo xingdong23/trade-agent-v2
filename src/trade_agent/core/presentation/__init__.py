@@ -8,6 +8,7 @@ from .contracts import (
     CardCatalog,
     CardEnvelope,
     CardPresenter,
+    CardSchema,
     CardSource,
     CardValidationError,
 )
@@ -22,6 +23,7 @@ __all__ = [
     "CardEnvelope",
     "CardPresenter",
     "CardProjectionService",
+    "CardSchema",
     "CardSource",
     "CardValidationError",
     "HitlCardPresenter",

@@ -12,6 +12,7 @@ from trade_agent.core.llm import (
     LLMMessage,
     LLMRequest,
     LLMResponse,
+    ModelEndpoint,
     ModelRoute,
 )
 from trade_agent.core.llm.structured import ValidatedLLMClient
@@ -21,11 +22,12 @@ from trade_agent.core.testing import FakeLLMClient
 def _route(**overrides: Any) -> LiteLLMRouteConfig:
     values: dict[str, Any] = {
         "logical_route": "research_summarizer",
-        "model": "openai/test-model",
-        "provider": "openai",
+        "endpoint": ModelEndpoint(provider="openai", model="test-model"),
         "allowed_providers": frozenset({"openai"}),
         "timeout_seconds": 2,
         "max_tokens": 100,
+        "concurrency_limit": 4,
+        "max_attempts": 2,
     }
     values.update(overrides)
     return LiteLLMRouteConfig(**values)
@@ -81,9 +83,38 @@ def test_complete_maps_route_schema_usage_and_request_metadata() -> None:
     assert response.structured == {"summary": "NVDA 风险与催化剂已整理"}
     assert response.usage.input_tokens == 3
     assert response.provider_request_id == "provider-request-1"
-    assert calls[0]["model"] == "openai/test-model"
+    assert calls[0]["model"] == "test-model"
     assert calls[0]["metadata"]["prompt_version"] == "research-summary.v1"
     assert calls[0]["response_format"]["type"] == "json_schema"
+
+
+@pytest.mark.parametrize(
+    ("provider", "model"),
+    [
+        ("openai", "research-summary-alias"),
+        ("azure", "gpt-4o-mini-deployment"),
+        ("vertex_ai", "publishers/google/models/gemini-1.5-pro"),
+    ],
+)
+def test_explicit_endpoint_provider_preserves_model_identifier(provider: str, model: str) -> None:
+    calls: list[dict[str, Any]] = []
+
+    async def completion(**kwargs: Any) -> ModelResponse:
+        calls.append(kwargs)
+        return _response()
+
+    route = _route(
+        endpoint=ModelEndpoint(provider=provider, model=model),
+        allowed_providers=frozenset({provider}),
+    )
+
+    response = asyncio.run(
+        LiteLLMClient({"research_summarizer": route}, completion=completion).complete(_request())
+    )
+
+    assert response.content == "完成"
+    assert len(calls) == 1
+    assert calls[0]["model"] == model
 
 
 def test_retry_and_explicit_fallback_never_use_unapproved_provider() -> None:
@@ -95,25 +126,23 @@ def test_retry_and_explicit_fallback_never_use_unapproved_provider() -> None:
             raise TimeoutError("temporary")
         return _response()
 
-    route = _route(max_attempts=2, fallback_models=("openai/fallback",))
+    route = _route(
+        max_attempts=2,
+        fallback_endpoints=(ModelEndpoint(provider="openai", model="fallback"),),
+    )
     response = asyncio.run(
         LiteLLMClient({"research_summarizer": route}, completion=completion).complete(_request())
     )
     assert response.content == "完成"
-    assert calls == ["openai/test-model", "openai/test-model", "openai/fallback"]
+    assert calls == ["test-model", "test-model", "fallback"]
 
-    bad_route = _route(max_attempts=1, fallback_models=("anthropic/fallback",))
 
-    async def always_timeout(**_: Any) -> ModelResponse:
-        raise TimeoutError("temporary")
-
-    with pytest.raises(LLMError) as denied:
-        asyncio.run(
-            LiteLLMClient({"research_summarizer": bad_route}, completion=always_timeout).complete(
-                _request()
-            )
+def test_route_config_rejects_unapproved_fallback_provider() -> None:
+    with pytest.raises(ValueError, match="fallback provider 未在 route allowlist"):
+        _route(
+            max_attempts=1,
+            fallback_endpoints=(ModelEndpoint(provider="anthropic", model="fallback"),),
         )
-    assert denied.value.code is LLMErrorCode.PROVIDER_NOT_ALLOWED
 
 
 def test_invalid_request_is_not_retried_and_error_is_sanitized() -> None:

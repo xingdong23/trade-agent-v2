@@ -22,12 +22,16 @@ from trade_agent.apps.journeys import (
     ResearchJourneyBackend,
     ResearchJourneyResult,
     SecurityCandidate,
+    planning_presenter_config_from_settings,
 )
 from trade_agent.capabilities.contracts import CapabilityResult
 from trade_agent.capabilities.market_research.application import (
+    ConfidenceBand,
+    ResearchAssemblyPolicy,
     ResearchAssemblyService,
     SecurityResearchDraft,
     SecurityResolver,
+    security_resolution_copy_from_settings,
 )
 from trade_agent.capabilities.market_research.cards import MarketResearchCardPresenter
 from trade_agent.capabilities.market_research.contracts import Market, SecurityId
@@ -61,6 +65,7 @@ from trade_agent.capabilities.quantitative.contracts import (
     EvaluationMetrics,
     EvaluationResult,
     HardRule,
+    InferencePolicy,
     ModelRegistry,
     ModelRegistryEntry,
     ModelRuntime,
@@ -73,7 +78,11 @@ from trade_agent.capabilities.quantitative.contracts import (
     ScanUniverseSnapshot,
     StrategyVersionSnapshot,
 )
-from trade_agent.capabilities.reminder.application import ReminderApplication, ReminderWorker
+from trade_agent.capabilities.reminder.application import (
+    ReminderApplication,
+    ReminderDeliveryPolicy,
+    ReminderWorker,
+)
 from trade_agent.capabilities.reminder.cards import ReminderCardPresenter
 from trade_agent.capabilities.reminder.contracts import (
     DeliveryStatus,
@@ -89,7 +98,13 @@ from trade_agent.capabilities.reminder.tools import (
 )
 from trade_agent.capabilities.watchlist.application import WatchlistService
 from trade_agent.capabilities.watchlist.contracts import ImportStatus
-from trade_agent.core.config import AppSettings, AuthenticationSettings, DatabaseSettings
+from trade_agent.core.config import (
+    AppSettings,
+    AuthenticationSettings,
+    DatabaseSettings,
+    MarketSettings,
+    PlanningJourneySettings,
+)
 from trade_agent.core.hitl import HumanInteraction, InteractionStatus, InteractionType
 from trade_agent.core.llm import JsonValue, LLMMessage, LLMRequest, LLMResponse, ModelRoute
 from trade_agent.core.presentation import CardEnvelope, HitlCardPresenter
@@ -99,6 +114,19 @@ from trade_agent.core.testing import FakeLLMClient, MappingIntentClassifier
 from trade_agent.core.tools import ToolRequest
 
 NOW = datetime(2026, 7, 27, 9, 30, tzinfo=UTC)
+REMINDER_DISCLAIMER = "提醒仅表示条件观察与通知 / 不表示下单或成交。"
+REMINDER_TRIGGER_MESSAGE = "提醒条件已满足: 这只是条件观察 / 不表示已下单或成交。"
+
+
+def _reminder_delivery_policy() -> ReminderDeliveryPolicy:
+    return ReminderDeliveryPolicy(
+        "acceptance-reminder-delivery.v1",
+        "acceptance.reminder.triggered.v1",
+        1,
+        (),
+        "notification unavailable",
+        REMINDER_TRIGGER_MESSAGE,
+    )
 
 
 class RecordingRuntime(ModelRuntime):
@@ -274,7 +302,15 @@ def _full_research_draft(security: SecurityId) -> SecurityResearchDraft:
 
 def _research_payload() -> CapabilityResult:
     security = _security()
-    artifact = ResearchAssemblyService().assemble_security(
+    artifact = ResearchAssemblyService(
+        ResearchAssemblyPolicy(
+            "acceptance-research.v1",
+            tuple(ResearchSectionKind),
+            (ConfidenceBand(0, "high"), ConfidenceBand(None, "low")),
+            "缺少 {section} 分析",
+            True,
+        )
+    ).assemble_security(
         _full_research_draft(security),
         evidence=(
             _evidence(
@@ -374,7 +410,11 @@ def _scan_submission(snapshot: ScanUniverseSnapshot) -> tuple[RecordingRuntime, 
         )
     )
     registry.approve("model-approved", actor_id="risk-owner")
-    inference = BatchInferenceService(registry, runtime, max_missing_ratio=0.1)
+    inference = BatchInferenceService(
+        registry,
+        runtime,
+        policy=InferencePolicy("acceptance-inference.v1", 0.1),
+    )
     submission = ScanSubmissionValidator().create(
         scan_id="scan-1",
         owner_id="owner-a",
@@ -413,6 +453,7 @@ def _scan_submission(snapshot: ScanUniverseSnapshot) -> tuple[RecordingRuntime, 
         ranking=RankingDefinition("ranking-v1", "up_probability", 1.0, {"quality": 0.1}),
         configuration=ScanConfiguration(
             "scan-config-v1",
+            "US",
             ("NASDAQ", "NYSE"),
             1_000_000,
             0.1,
@@ -430,7 +471,9 @@ class AcceptanceResearchJourney(ResearchJourneyBackend):
     def __init__(self, llm: FakeLLMClient) -> None:
         self._llm = llm
         self._reminders = FakeReminderRepository()
-        self._reminder_app = ReminderApplication(self._reminders)
+        self._reminder_app = ReminderApplication(
+            self._reminders, execution_disclaimer=REMINDER_DISCLAIMER
+        )
 
     def resolve(self, symbol: str, *, owner_id: str, run_id: str) -> tuple[SecurityCandidate, ...]:
         del owner_id, run_id
@@ -438,7 +481,9 @@ class AcceptanceResearchJourney(ResearchJourneyBackend):
             (
                 _security(symbol, exchange="NASDAQ", name="NVIDIA Corporation"),
                 _security(symbol, exchange="NYSE", name="NVIDIA Depositary"),
-            )
+            ),
+            supported_market_hints=frozenset({"US", "USA", "NASDAQ", "NYSE"}),
+            copy=security_resolution_copy_from_settings(MarketSettings()),
         ).resolve(symbol)
         return tuple(
             SecurityCandidate(
@@ -527,6 +572,11 @@ class AcceptanceResearchJourney(ResearchJourneyBackend):
             scan_card,
             {
                 "scan_result_id": scan_card.source.source_id,
+                "scan_result_version": scan_card.source.version,
+                "evidence_ids": list(result.evidence_refs),
+                "strategy_id": "strategy-1",
+                "strategy_version": 3,
+                "model_version_id": result.model_version_id,
                 "direction": "研究确认后的回撤买入计划",
                 "horizon": "20 个交易日",
                 "entry_condition": "回踩后重新站上关键位",
@@ -568,6 +618,7 @@ class AcceptanceResearchJourney(ResearchJourneyBackend):
         plan_id: str,
         interaction_id: str,
         idempotency_key: str,
+        notification_channel: str,
     ) -> CardEnvelope:
         reminder_id = f"reminder:{plan_id}"
         asyncio.run(
@@ -580,7 +631,7 @@ class AcceptanceResearchJourney(ResearchJourneyBackend):
                         "plan_id": plan_id,
                         "rule_type": "scheduled_review",
                         "condition": {"scheduled_at": (NOW + timedelta(days=5)).isoformat()},
-                        "notification_channel": "in_app",
+                        "notification_channel": notification_channel,
                         "cooldown_seconds": 300,
                     },
                     idempotency_key=f"{idempotency_key}:create",
@@ -636,7 +687,8 @@ def test_single_conversation_run_drives_research_scan_plan_reminder_and_review(
                 Intent.RESEARCH,
                 "research_to_plan",
                 1.0,
-                (("symbol", "NVDA"),),
+                reason_code="test_fixture",
+                entities=(("symbol", "NVDA"),),
             )
         }
     )
@@ -714,7 +766,15 @@ def test_single_conversation_run_drives_research_scan_plan_reminder_and_review(
     ]
     final_review = pending[0]["card"]
     assert final_review["kind"] == "interaction.review"
-    completed = respond(final_review, "confirm", {})
+    completed = respond(
+        final_review,
+        "confirm",
+        {
+            "outcome": "false_positive",
+            "note": "提醒触发后走势没有延续",
+            "feedback_destinations": ["future_strategy_draft"],
+        },
+    )
     assert completed.status_code == 200, completed.text
     assert completed.json()["card"]["kind"] == "artifact.trade_plan"
     assert "已复盘" in completed.json()["card"]["data"]["summary"]
@@ -734,7 +794,7 @@ def test_single_conversation_run_drives_research_scan_plan_reminder_and_review(
         "artifact.reminder",
     } <= artifact_kinds
     reviews = client.get("/api/reviews", headers=headers).json()["items"]
-    assert reviews[0]["payload"]["outcome"] == "useful"
+    assert reviews[0]["payload"]["outcome"] == "false_positive"
     events = client.get(f"/api/runs/{run['run_id']}/events?after=0", headers=headers).text
     assert events.index("artifact.research") < events.index("progress.scan")
     assert events.index("progress.scan") < events.index("artifact.scan_result")
@@ -806,7 +866,11 @@ def test_acceptance_flow_covers_ambiguous_research_scan_plan_reminder_and_review
 
     primary = _security("NVDA", exchange="NASDAQ", name="NVIDIA Corporation")
     duplicate = _security("NVDA", exchange="NYSE", name="NVIDIA Depositary")
-    resolver = SecurityResolver((primary, duplicate))
+    resolver = SecurityResolver(
+        (primary, duplicate),
+        supported_market_hints=frozenset({"US", "USA", "NASDAQ", "NYSE"}),
+        copy=security_resolution_copy_from_settings(MarketSettings()),
+    )
     resolution = resolver.resolve("NVDA")
     assert resolution.status.value == "ambiguous"
 
@@ -1039,11 +1103,15 @@ def test_acceptance_flow_covers_ambiguous_research_scan_plan_reminder_and_review
         idempotency_key="activate-plan-1",
         occurred_at=NOW + timedelta(minutes=2),
     )
-    plan_artifact = PlanningCardPresenter().plan_artifact(active_plan)
+    plan_artifact = PlanningCardPresenter(
+        planning_presenter_config_from_settings(PlanningJourneySettings())
+    ).plan_artifact(active_plan)
     assert plan_artifact.kind == "artifact.trade_plan"
 
     reminder_repository = FakeReminderRepository()
-    reminder_app = ReminderApplication(reminder_repository)
+    reminder_app = ReminderApplication(
+        reminder_repository, execution_disclaimer=REMINDER_DISCLAIMER
+    )
     reminder_create = CreateReminderTool(reminder_app)
     reminder_get = GetReminderTool(reminder_app)
     reminder_transition = SetReminderStatusTool(reminder_app)
@@ -1133,6 +1201,7 @@ def test_acceptance_flow_covers_ambiguous_research_scan_plan_reminder_and_review
             )
         ),
         InMemoryNotificationAdapter(),
+        delivery_policy=_reminder_delivery_policy(),
     )
     reminder_repository.save_observation(
         "reminder-1",
@@ -1260,7 +1329,9 @@ def test_acceptance_flow_rejects_cross_user_tampering_timeouts_non_us_and_provid
     else:
         raise AssertionError("expected unsupported_market")
 
-    unsupported = PlanningCardPresenter().unsupported(
+    unsupported = PlanningCardPresenter(
+        planning_presenter_config_from_settings(PlanningJourneySettings())
+    ).unsupported(
         reference_id="request-1",
         unsupported_kind="execute_trade",
         message="首版不能下单, 只能创建美股交易计划。",
@@ -1319,7 +1390,9 @@ def test_acceptance_flow_covers_trade_choice_form_errors_edit_supersede_and_idem
 ) -> None:
     bundle = _bundle(tmp_path)
     headers = {"X-User-ID": "owner-a"}
-    presenter = PlanningCardPresenter()
+    presenter = PlanningCardPresenter(
+        planning_presenter_config_from_settings(PlanningJourneySettings())
+    )
 
     choice = presenter.intent_choice("choice-1")
     options = choice.data["options"]

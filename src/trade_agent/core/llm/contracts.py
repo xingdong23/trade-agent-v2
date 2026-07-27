@@ -19,6 +19,27 @@ class ModelRoute:
     name: str
 
 
+@dataclass(frozen=True, slots=True)
+class ModelEndpoint:
+    """单个物理模型端点的显式声明。
+
+    Attributes:
+        provider: LiteLLM 路由时使用的 provider 标识。
+        model: 传给 provider SDK 的原始模型或部署名；不得依赖字符串推断 provider。
+    """
+
+    provider: str
+    model: str
+
+    def __post_init__(self) -> None:
+        provider = self.provider.strip()
+        model = self.model.strip()
+        if not provider or not model:
+            raise ValueError("ModelEndpoint 必须同时包含 provider 与 model")
+        object.__setattr__(self, "provider", provider)
+        object.__setattr__(self, "model", model)
+
+
 class LLMErrorCode(StrEnum):
     """业务层可以稳定处理的模型调用错误类别。"""
 
@@ -87,14 +108,14 @@ class LLMRequest:
 
     route: ModelRoute
     messages: Sequence[LLMMessage]
+    prompt_version: str
     response_schema: Mapping[str, JsonValue] | None = None
-    prompt_version: str = "unversioned"
     metadata: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.route.name.strip() or not self.messages:
             raise ValueError("LLMRequest 必须包含 route 与 message")
-        if self.prompt_version == "unversioned":
+        if not self.prompt_version.strip():
             raise ValueError("LLMRequest 必须声明 prompt_version")
 
 

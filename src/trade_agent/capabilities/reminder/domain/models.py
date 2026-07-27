@@ -61,8 +61,8 @@ class ReminderRule:
     status: ReminderStatus
     rule_type: ReminderRuleType
     condition: Mapping[str, JsonValue]
-    notification_channel: str = "in_app"
-    cooldown: timedelta = timedelta()
+    notification_channel: str
+    cooldown: timedelta
     approved_by: str | None = None
     approved_payload_hash: str | None = None
     metadata: Mapping[str, JsonValue] = field(default_factory=dict)
@@ -240,7 +240,28 @@ def should_trigger(
     return False
 
 
-def build_trigger(rule: ReminderRule, observation: ReminderObservation) -> ReminderTrigger:
+def build_trigger(
+    rule: ReminderRule,
+    observation: ReminderObservation,
+    *,
+    message: str,
+) -> ReminderTrigger:
+    """基于规则与观测创建稳定触发记录。
+
+    Args:
+        rule: 已满足触发条件的提醒规则版本。
+        observation: 触发所依据的来源观测。
+        message: 由 application 层策略注入的用户可见文案。
+
+    Returns:
+        尚待通知投递的不可变提醒触发。
+
+    Raises:
+        ValueError: 用户可见文案为空。
+    """
+
+    if not message.strip():
+        raise ValueError("reminder trigger message 不能为空")
     raw_key = (
         f"{rule.reminder_id}:{rule.version}:{observation.observation_reference}:"
         f"{observation.observed_at.isoformat()}"
@@ -252,7 +273,7 @@ def build_trigger(rule: ReminderRule, observation: ReminderObservation) -> Remin
         rule_version=rule.version,
         observed_at=observation.observed_at,
         observation_reference=observation.observation_reference,
-        message="提醒条件已满足: 这只是条件观察 / 不表示已下单或成交。",
+        message=message,
     )
 
 

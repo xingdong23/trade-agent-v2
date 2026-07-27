@@ -115,7 +115,7 @@ class SQLiteScanJobStore:
         scan_id: str,
         payload: Mapping[str, JsonValue],
         units: Sequence[ScanUnitInput],
-        max_attempts: int = 3,
+        max_attempts: int,
     ) -> bool:
         if not units:
             raise ValueError("扫描至少需要一个证券执行单元")
@@ -191,7 +191,7 @@ class SQLiteScanJobStore:
             )
         return True
 
-    def claim(self, *, worker_id: str, lease_seconds: int = 60) -> ClaimedScanUnit | None:
+    def claim(self, *, worker_id: str, lease_seconds: int) -> ClaimedScanUnit | None:
         if lease_seconds < 1:
             raise ValueError("lease_seconds 必须大于 0")
         now = datetime.now(UTC)
@@ -293,7 +293,7 @@ class SQLiteScanJobStore:
                 attempts=int(row["attempts"]),
             )
 
-    def heartbeat(self, *, unit_id: str, worker_id: str, lease_seconds: int = 60) -> None:
+    def heartbeat(self, *, unit_id: str, worker_id: str, lease_seconds: int) -> None:
         if lease_seconds < 1:
             raise ValueError("lease_seconds 必须大于 0")
         now = datetime.now(UTC)

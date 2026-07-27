@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 
 import ChatTimeline from "./ChatTimeline.vue";
+import { apiBase } from "./config";
 import {
   ChatRecoveryClient,
   emptySnapshot,
@@ -15,9 +16,18 @@ import {
 import { HttpHitlResponseClient } from "./hitl";
 import type { CardEnvelope, ChatMessage } from "./types";
 
-const apiBase = "/api";
 const searchParameters = new URLSearchParams(window.location.search);
-const threadId = searchParameters.get("thread") || "local";
+const threadStorageKey = "trade-agent:active-thread";
+const threadId =
+  searchParameters.get("thread") ||
+  sessionStorage.getItem(threadStorageKey) ||
+  crypto.randomUUID();
+sessionStorage.setItem(threadStorageKey, threadId);
+if (!searchParameters.has("thread")) {
+  const url = new URL(window.location.href);
+  url.searchParams.set("thread", threadId);
+  window.history.replaceState(null, "", url);
+}
 const runStorageKey = `trade-agent:thread:${threadId}:run`;
 const cursorStorageKey = `trade-agent:thread:${threadId}:cursor`;
 const activeRunId = ref(
@@ -68,11 +78,7 @@ async function recover(): Promise<void> {
       recoveryController.signal,
     );
     let next = emptySnapshot(threadId);
-    next = mergeCards(next, [
-      ...recovered.pending,
-      ...recovered.artifacts,
-      ...recovered.jobs,
-    ]);
+    next = mergeCards(next, recovered.cards);
     next = mergeMessages(next, recovered.messages);
     snapshot.value = {
       ...next,
@@ -150,6 +156,20 @@ async function sendMessage(): Promise<void> {
       typeof body.run_id === "string"
     ) {
       activeRunId.value = body.run_id;
+      if (
+        "user_message_id" in body &&
+        typeof body.user_message_id === "string"
+      ) {
+        snapshot.value = mergeMessages(
+          {
+            ...snapshot.value,
+            messages: snapshot.value.messages.filter(
+              (message) => message.id !== optimistic.id,
+            ),
+          },
+          [{ ...optimistic, id: body.user_message_id }],
+        );
+      }
       sessionStorage.setItem(runStorageKey, body.run_id);
       const url = new URL(window.location.href);
       url.searchParams.set("thread", threadId);
