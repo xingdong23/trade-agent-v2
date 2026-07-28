@@ -1,8 +1,14 @@
 """自然语言会话进入 Supervisor Graph 与注册工作流的唯一入口。
 
-主流程固定为：创建 run、结构化分类、调用 Supervisor Graph、校验 Graph 路由结果、
-启动注册工作流。业务步骤、Card 构造和 SQLite 组织方式由注入模块负责，本模块不枚举
-具体 Workflow ID、HITL subject type 或自然语言短语。
+阅读本模块时只需跟踪两个公开入口：
+
+``start_run``
+    接收新消息，依次完成 run 建立、结构化分类、Graph 路由、Workflow 校验与启动。
+``handle_resolved_interaction``
+    接收已经通过 HITL 校验的人工响应，找到原 Workflow 并从暂停点继续。
+
+业务步骤、Card 构造和 SQLite 组织方式由注入模块负责。本模块不枚举具体 Workflow
+ID、HITL subject type 或自然语言短语。
 """
 
 from __future__ import annotations
@@ -86,11 +92,27 @@ class ConversationRunService:
         message: str,
         correlation_id: str,
     ) -> ConversationRunResult:
-        """启动会话并推进到结束或首个 HITL 暂停点。"""
+        """启动会话并推进到结束或首个 HITL 暂停点。
 
+        Args:
+            owner_id: 已认证用户标识，也是资源隔离键。
+            thread_id: 前端提供的会话线程标识。
+            message: 尚未解释业务含义的用户原始消息。
+            correlation_id: 贯穿日志和 trace 的请求关联标识。
+
+        Returns:
+            当前 run 的状态、首张 Card 和可选待处理 HITL 标识。
+
+        Side Effects:
+            创建 run，记录用户消息，执行一次 Supervisor Graph，并可能启动一个 Workflow。
+        """
+
+        # 阶段一：先建立 owner-scoped run。后续事件、Card 和 HITL 都必须引用该 run。
         run_id = str(uuid4())
         self._checkpointer.bind_thread(owner_id=owner_id, thread_id=thread_id)
         self._workflow_runtime.start_run(owner_id=owner_id, run_id=run_id, thread_id=thread_id)
+
+        # 阶段二：分类器负责理解自然语言；运行时只读取结构化结果，不判断关键词。
         classification = self._intent_classifier.classify(message=message, owner_id=owner_id)
         intent_id = normalize_route_intent(classification.intent)
         message_id = self._workflow_runtime.record_user_message(
@@ -101,6 +123,8 @@ class ConversationRunService:
             intent_id=intent_id,
             workflow_id=classification.workflow_id,
         )
+
+        # 阶段三：Graph 只确认负责处理请求的 Agent，并执行通用路由门禁。
         graph_state = self._graph.invoke(
             AgentState(
                 user_id=owner_id,
@@ -124,6 +148,7 @@ class ConversationRunService:
             },
         )
 
+        # 阶段四：同时匹配 workflow_id 与 Graph 选择的 agent_id，防止绕过 Supervisor。
         workflow = None
         if classification.workflow_id is not None:
             workflow = self._workflow_registry.resolve_start(
@@ -132,6 +157,8 @@ class ConversationRunService:
             )
         if workflow is None:
             return self._unsupported(run_id, thread_id, owner_id, message_id)
+
+        # 阶段五：具体业务从这里交给 Workflow；通用入口不再参与后续业务分支。
         return replace(
             workflow.start(
                 context=WorkflowStartContext(owner_id, thread_id, run_id, classification),
@@ -141,8 +168,19 @@ class ConversationRunService:
         )
 
     def handle_resolved_interaction(self, interaction: HumanInteraction) -> CardEnvelope | None:
-        """幂等消费已解决的 HITL，并委托注册工作流恢复。"""
+        """幂等消费已解决的 HITL，并委托注册工作流恢复。
 
+        Args:
+            interaction: 已完成 owner、版本、payload hash 和响应 schema 校验的人工交互。
+
+        Returns:
+            Workflow 恢复后产生的下一张 Card；无需推进时返回 ``None``。
+
+        Side Effects:
+            可能推进领域状态、发布 Card，并保存可跨进程重放的恢复收据。
+        """
+
+        # API 超时重试时优先返回持久化收据，绝不再次执行业务副作用。
         replay = self._workflow_runtime.load_resume_card(
             interaction.owner_id, interaction.interaction_id
         )
@@ -150,11 +188,14 @@ class ConversationRunService:
             return replay
         if interaction.status is not InteractionStatus.RESOLVED:
             return None
+
+        # subject_type 只用于查询注册表；通用运行时不认识任何具体 subject type。
         workflow = self._workflow_registry.resolve_resume(interaction.subject_type)
         if workflow is None:
             return None
         card = workflow.resume(interaction, self._workflow_runtime)
         if card is not None:
+            # 先持久化最终结果，再返回 API，保证进程重启后仍能安全重放。
             self._workflow_runtime.save_resume_card(
                 owner_id=interaction.owner_id,
                 interaction_id=interaction.interaction_id,

@@ -342,7 +342,18 @@ class PlanningConversationWorkflow(ConversationWorkflow):
         context: WorkflowStartContext,
         runtime: WorkflowRuntime,
     ) -> ConversationRunResult:
-        """根据 workflow_id 启动对应的 planning 流程。"""
+        """根据已注册 workflow_id 启动对应的 Planning 用例。
+
+        Args:
+            context: 包含 owner、thread、run 和结构化分类实体的启动上下文。
+            runtime: 负责 Card、事件和恢复上下文持久化的运行时协议。
+
+        Returns:
+            已推进到首个 HITL 暂停点的会话结果。
+
+        Notes:
+            这里是 Planning 模块内部允许存在的业务分支；通用会话运行时不认识这些 ID。
+        """
 
         if context.classification.workflow_id == WORKFLOW_PLANNING_CHOOSE_OPERATION:
             return self._start_choice(context, runtime)
@@ -355,7 +366,11 @@ class PlanningConversationWorkflow(ConversationWorkflow):
         interaction: HumanInteraction,
         runtime: WorkflowRuntime,
     ) -> CardEnvelope | None:
-        """从 planning 工作流的暂停点恢复执行。"""
+        """根据本 Workflow 声明的 subject type 从暂停点恢复执行。
+
+        Choice、Form 与 Approval 是 Planning 状态机的不同暂停点。每个分支只处理自己
+        创建的交互，完成后通过 ``WorkflowRuntime`` 发布下一张 Card。
+        """
 
         if interaction.subject_type == _SUBJECT_PLANNING_CHOICE:
             runtime.publish_interaction(interaction, "card.resolved")
@@ -387,6 +402,8 @@ class PlanningConversationWorkflow(ConversationWorkflow):
         context: WorkflowStartContext,
         runtime: WorkflowRuntime,
     ) -> ConversationRunResult:
+        """创建计划请求表单，并明确提示系统不会执行真实下单。"""
+
         symbol, exchange, identifier_locked = _classified_identifier(context.classification)
         notice = runtime.create_unsupported_notice(
             reference_id=context.run_id,
@@ -464,6 +481,8 @@ class PlanningConversationWorkflow(ConversationWorkflow):
         interaction: HumanInteraction,
         runtime: WorkflowRuntime,
     ) -> CardEnvelope:
+        """把已校验表单转换为计划草稿或新版本，然后进入审批暂停点。"""
+
         values = interaction.response or {}
         if interaction.subject_type == _SUBJECT_PLANNING_REQUEST:
             plan = self._planning.create_draft(
@@ -506,6 +525,8 @@ class PlanningConversationWorkflow(ConversationWorkflow):
         interaction: HumanInteraction,
         runtime: WorkflowRuntime,
     ) -> CardEnvelope:
+        """处理编辑或确认操作，并在确认后生成最终计划 Artifact。"""
+
         current = self._planning.get_plan(
             owner_id=interaction.owner_id,
             plan_id=interaction.subject_id,

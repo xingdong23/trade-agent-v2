@@ -129,6 +129,12 @@ def create_app(
     def start_run(
         request: RunRequest, user: Annotated[UserContext, Depends(user_context)]
     ) -> Mapping[str, JsonValue]:
+        """把一条用户消息交给会话运行时。
+
+        API 层只负责认证身份、转换 HTTP 请求与响应。意图分类、Agent 路由和业务推进
+        全部委托给 ``ConversationRunService``，避免 HTTP endpoint 形成第二套流程。
+        """
+
         try:
             result = _required(resolved_container.conversation_runtime).start_run(
                 owner_id=user.user_id,
@@ -199,8 +205,11 @@ def create_app(
     ) -> object:
         """校验并解决人工交互，然后恢复原会话流程。
 
-        payload hash 防止用户确认后端已更新的旧卡片，revision 防止并发覆盖，
-        idempotency key 则保证客户端超时重试不会重复执行审批动作。
+        执行顺序：幂等收据 -> 读取交互 -> Card 版本与 payload 校验 -> 解决 HITL ->
+        恢复 Workflow -> 保存命令结果。任何一步失败都不能执行后续业务副作用。
+
+        ``payload_hash`` 防止用户确认后端已更新的旧卡片，``revision`` 防止并发覆盖，
+        ``idempotency_key`` 保证客户端超时重试不会重复执行审批动作。
         """
 
         command_store = _required(resolved_container.command_store)
@@ -214,6 +223,8 @@ def create_app(
         )
         if receipt.reused and receipt.result is not None:
             return receipt.result
+
+        # 读取当前持久化交互，不能相信客户端提交的 subject 或展示数据。
         service = _required(resolved_container.hitl_service)
         current = service.get(user.user_id, interaction_id)
         if current is None:
@@ -277,6 +288,8 @@ def create_app(
             )
         except PermissionError as exc:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "interaction 不存在") from exc
+
+        # HitlService 只负责安全解决交互；具体下一步仍由创建它的 Workflow 决定。
         next_card = _required(resolved_container.conversation_runtime).handle_resolved_interaction(
             interaction
         )
@@ -287,6 +300,7 @@ def create_app(
             "version": interaction.version,
             "card": card.to_mapping(),
         }
+        # 最后保存 HTTP 命令收据，重复请求将直接复用完全相同的结果。
         command_store.complete(owner_id=user.user_id, command_id=receipt.command_id, result=result)
         return result
 

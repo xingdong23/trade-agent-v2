@@ -52,6 +52,9 @@ class DefaultWorkflowRuntime(ConversationRuntime):
 
     该实现集中管理 Card、artifact、恢复上下文、动态资源、run event 和恢复收据。
     工作流只依赖 ``WorkflowRuntime``，不需要知道 SQLite repository 的组织方式。
+
+    写入关系如下：普通 Card 写入 ``cards``，长期领域产物写入 ``artifacts``，每次写入
+    同时追加 run event；HITL 恢复结果另存为收据，用于请求重放和进程重启。
     """
 
     def __init__(
@@ -123,7 +126,7 @@ class DefaultWorkflowRuntime(ConversationRuntime):
         return message_id
 
     def publish_interaction(self, interaction: HumanInteraction, event_type: str) -> CardEnvelope:
-        """把 HITL 聚合投影为 Card 并发布。"""
+        """把 HITL 聚合确定性投影为 Card，再走统一 Card 发布路径。"""
 
         projected = HitlCardPresenter().present(interaction)
         return self.publish_card(
@@ -144,8 +147,13 @@ class DefaultWorkflowRuntime(ConversationRuntime):
         *,
         artifact: bool = False,
     ) -> CardEnvelope:
-        """保存 Card 或 artifact，并发布同一修订对应的 run event。"""
+        """保存 Card 或 artifact，并发布同一修订对应的 run event。
 
+        ``artifact=False`` 保存可变化的交互/进度 Card；``artifact=True`` 保存长期业务
+        产物。两条路径都会追加事件，因此前端可以通过 SSE 或 snapshot 得到一致结果。
+        """
+
+        # Card 与 artifact 使用不同 repository，避免把前端投影当作领域 source of truth。
         repository = self._artifacts if artifact else self._cards
         existing = repository.get(owner_id, card.card_id)
         repository.save(

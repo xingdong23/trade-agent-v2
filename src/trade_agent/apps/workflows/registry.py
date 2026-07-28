@@ -49,7 +49,16 @@ class WorkflowRegistry:
     ) -> ConversationWorkflow | None:
         """返回同时匹配 Workflow ID 与 Graph 路由结果的工作流。
 
-        不一致时返回 ``None``，使会话入口安全关闭，而不是绕过 Supervisor Graph。
+        Args:
+            workflow_id: 分类器返回的稳定业务流程标识。
+            selected_agent_id: Supervisor Graph 最终确认的 Agent 标识。
+
+        Returns:
+            同时满足两个条件的 Workflow；不存在或 Agent 不一致时返回 ``None``。
+
+        Notes:
+            这一步把“用户想做什么”和“哪个 Agent 有权处理”合并成一次安全判定。
+            不一致时会话入口必须关闭，而不能只相信分类器绕过 Supervisor Graph。
         """
 
         workflow = self._by_id.get(workflow_id)
@@ -58,7 +67,11 @@ class WorkflowRegistry:
         return workflow
 
     def resolve_resume(self, subject_type: str) -> ConversationWorkflow | None:
-        """按持久化 HITL subject type 返回负责恢复的工作流。"""
+        """按持久化 HITL subject type 返回负责恢复的工作流。
+
+        ``subject_type`` 由创建交互的 Workflow 声明，因此恢复时无需在通用运行时中
+        编写业务 ``if/elif``。
+        """
 
         return self._by_subject_type.get(subject_type)
 

@@ -78,7 +78,11 @@ def resolve_context(state: AgentState) -> AgentState:
 
 
 def route(state: AgentState) -> AgentState:
-    """把结构化意图映射为具体 Agent 节点名。"""
+    """把结构化意图映射为具体 Agent 节点名。
+
+    该节点不执行 Agent，也不选择 Tool，只产生后续条件边使用的稳定
+    ``selected_agent_id``。
+    """
 
     return {"selected_agent_id": normalize_route_intent(state.get("intent"))}
 
@@ -97,7 +101,11 @@ def _make_route_selector(registry: AgentRouteRegistry) -> Callable[[AgentState],
 
 
 def _build_route_node(agent_id: str) -> Callable[[AgentState], AgentState]:
-    """为一个业务 Agent 生成无副作用的固定路由节点。"""
+    """为一个业务 Agent 生成无副作用的固定路由确认节点。
+
+    当前实现尚未在这里调用业务 subgraph。节点只确认 Registry 允许该 Agent ID，
+    真正业务随后由注册 Workflow 执行。
+    """
 
     def route_to_agent(_: AgentState) -> AgentState:
         return {"selected_agent_id": agent_id}
@@ -126,7 +134,12 @@ def select_policy_path(state: AgentState) -> str:
 
 
 def execute_command(_: AgentState) -> AgentState:
-    """命令细节通过注入的 ToolGateway 执行; checkpoint 只收结果引用。"""
+    """保留未来接入 ToolGateway 的 Graph 执行节点。
+
+    当前节点没有业务实现，因此默认会话主流程不会在 Graph 内调用 Tool。现阶段业务
+    命令由 ``ConversationWorkflow`` 委托 capability application service 执行。
+    """
+
     return {}
 
 
