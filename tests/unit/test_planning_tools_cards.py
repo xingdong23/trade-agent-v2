@@ -9,7 +9,7 @@ from typing import Any, cast
 
 import pytest
 
-from trade_agent.apps.journeys import planning_presenter_config_from_settings
+from trade_agent.apps.workflows import planning_presenter_config_from_settings
 from trade_agent.capabilities.planning.application import PlanDraftRequest, PlanningService
 from trade_agent.capabilities.planning.cards import PlanningCardPresenter
 from trade_agent.capabilities.planning.contracts import PlanLineage
@@ -18,7 +18,7 @@ from trade_agent.capabilities.planning.tools import (
     RecordPlanningReviewTool,
     TransitionPlanTool,
 )
-from trade_agent.core.config.settings import PlanningJourneySettings
+from trade_agent.core.config.settings import PlanningWorkflowSettings
 from trade_agent.core.llm.contracts import JsonValue
 from trade_agent.core.presentation import DEFAULT_CARD_CATALOG, CardEnvelope
 from trade_agent.core.tools import ToolExecutionContext, ToolExecutionPrincipal, ToolRequest
@@ -209,7 +209,7 @@ def test_choice_form_approval_edit_supersede_and_artifact_cards_are_catalog_vali
     service = PlanningService()
     incomplete = service.create_draft(_request(complete=False), idempotency_key="draft-1")
     presenter = PlanningCardPresenter(
-        planning_presenter_config_from_settings(PlanningJourneySettings())
+        planning_presenter_config_from_settings(PlanningWorkflowSettings())
     )
 
     choice = presenter.intent_choice("interaction-choice-1")

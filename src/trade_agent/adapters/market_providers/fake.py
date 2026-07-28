@@ -11,15 +11,36 @@ from trade_agent.capabilities.market_research.contracts import (
     SecurityResolutionStatus,
 )
 from trade_agent.capabilities.market_research.ports import (
+    CorporateActionProvider,
+    FundamentalsProvider,
+    KlineProvider,
+    NewsSearchProvider,
+    NotificationProvider,
     ProviderError,
     ProviderErrorCode,
     ProviderObservation,
     ProviderRequestContext,
+    QuoteProvider,
+    SecurityLookupProvider,
 )
 from trade_agent.core.llm.contracts import JsonValue
 
 
 class FakeProviderScenario(StrEnum):
+    """控制 fake provider 返回路径的稳定场景枚举。
+
+    Attributes:
+        NORMAL: 正常返回预置证券解析、行情与新闻结果。
+        STALE: 返回预置结果，但由测试数据自行表达“过期”语义。
+        CONFLICT: 返回可用于触发证据冲突判定的多条 observation。
+        RATE_LIMITED: 模拟可重试的上游限流错误。
+        TIMEOUT: 模拟可重试的上游超时错误。
+        UNAVAILABLE: 模拟可重试的上游不可用错误。
+
+    Invariants:
+        - 枚举值是测试夹具与断言依赖的稳定协议，不得随意改名。
+    """
+
     NORMAL = "normal"
     STALE = "stale"
     CONFLICT = "conflict"
@@ -29,13 +50,25 @@ class FakeProviderScenario(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
-class FakeMarketProvider:
+class FakeMarketProvider(
+    SecurityLookupProvider,
+    QuoteProvider,
+    KlineProvider,
+    CorporateActionProvider,
+    FundamentalsProvider,
+    NewsSearchProvider,
+    NotificationProvider,
+):
     """可重复重放的美股市场数据 fake provider。
 
     Attributes:
         securities: 可解析的证券身份集合。
         observations: 按证据类型组织的预置观测结果。
         scenario: 控制 fake 返回正常、限流、超时等场景。
+
+    Invariants:
+        - 只读取构造时注入的静态数据，不访问外部系统。
+        - CONFLICT 场景下，相关证据类型至少需要两条 observation。
     """
 
     securities: tuple[SecurityId, ...]

@@ -33,7 +33,7 @@ class PlanningChoiceOptionSpec:
 
 @dataclass(frozen=True, slots=True)
 class PlanningFieldSpec:
-    """Planning 卡片与 Journey 共用的字段目录项。
+    """Planning 卡片与 Workflow 共用的字段目录项。
 
     Attributes:
         key: 稳定字段标识。
@@ -46,7 +46,7 @@ class PlanningFieldSpec:
         max_length: 最大文本长度；``None`` 表示不声明。
         plan_attribute: 若字段映射到 ``TradingPlan``，对应的属性名。
         source_fallback: 字段来源缺失时的默认文案。
-        include_in_request_form: 是否用于 Journey 创建 HITL 请求表单。
+        include_in_request_form: 是否用于 Workflow 创建 HITL 请求表单。
         include_in_presenter_form: 是否用于 presenter 生成计划表单卡。
         include_in_approval: 是否出现在审批 facts 中。
         approval_severity: 审批 facts 的默认严重度。
@@ -215,7 +215,7 @@ class PlanningCardPresenter:
 
     @property
     def config(self) -> PlanningPresenterConfig:
-        """暴露只读配置，供 Journey 复用字段目录。"""
+        """暴露只读配置，供 Workflow 复用字段目录。"""
 
         return self._config
 

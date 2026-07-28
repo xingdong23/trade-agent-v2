@@ -1,5 +1,6 @@
 """Market Research capability 的证券解析与证据组装用例。"""
 
+from trade_agent.capabilities.contracts import CapabilityApplication
 from trade_agent.capabilities.market_research.contracts import (
     CapabilityCommand,
     CapabilityQuery,
@@ -22,7 +23,7 @@ from .security_resolution import (
 )
 
 
-class MarketResearchApplication:
+class MarketResearchApplication(CapabilityApplication):
     """Phase-one public application boundary."""
 
     async def execute(self, command: CapabilityCommand) -> CapabilityResult:

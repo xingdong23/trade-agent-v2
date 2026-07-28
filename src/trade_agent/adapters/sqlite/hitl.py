@@ -7,6 +7,7 @@ from sqlalchemy import RowMapping, insert, select, update
 from sqlalchemy.exc import IntegrityError
 
 from trade_agent.core.hitl import (
+    HitlRepository,
     HumanInteraction,
     InteractionConflictError,
     InteractionExpiredError,
@@ -20,7 +21,7 @@ from .json_support import dump_json, load_json
 from .schema import HitlInteractionRecord
 
 
-class SQLiteHitlRepository:
+class SQLiteHitlRepository(HitlRepository):
     def __init__(self, database: SQLiteDatabase) -> None:
         self._database = database
 

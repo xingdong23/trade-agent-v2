@@ -15,6 +15,17 @@ from .models import Evidence, FrozenJsonValue, SecurityId
 
 
 class FreshnessStatus(StrEnum):
+    """证据时效性判定的稳定枚举。
+
+    Attributes:
+        FRESH: 证据在配置阈值内，允许作为新鲜数据使用。
+        STALE: 证据超出配置阈值，时效要求严格时应被拒绝。
+        UNKNOWN: 缺少观测时间或未配置阈值，无法判断是否新鲜。
+
+    Invariants:
+        - 枚举值直接写入 ``Evidence.freshness``，属于持久化协议字段。
+    """
+
     FRESH = "fresh"
     STALE = "stale"
     UNKNOWN = "unknown"
@@ -35,6 +46,10 @@ class EvidenceInput:
         retrieved_at: 当前系统拉取该数据的时间。
         payload: 规范化前的原始 JSON 负载。
         entitlement: 读取该证据所需的授权范围元数据。
+
+    Invariants:
+        - 本模型承载进入不可变快照前的原始输入，不应被下游原地修改。
+        - payload 与 entitlement 必须能规范化为 JSON object。
     """
 
     evidence_id: str
@@ -56,6 +71,9 @@ class EvidenceConflict:
     Attributes:
         evidence_type: 发生冲突的证据类型。
         evidence_ids: 参与冲突判定的证据标识集合。
+
+    Invariants:
+        - evidence_ids 只记录同一证券、同一 evidence_type 下参与比较的证据。
     """
 
     evidence_type: str
@@ -92,6 +110,9 @@ class Claim:
     Attributes:
         text: 主张文本。
         evidence_ids: 支撑该主张的证据标识集合。
+
+    Invariants:
+        - 每条主张都必须引用至少一个下游可校验的证据标识。
     """
 
     text: str
@@ -107,6 +128,10 @@ class EvidenceAssessment:
         rejected_evidence_ids: 因授权、时效或冲突被拒绝的证据标识集合。
         conflicts: 同类证据之间的结构化冲突信息。
         gaps: 应向用户暴露的数据缺口或拒绝原因。
+
+    Invariants:
+        - accepted_evidence_ids 与 rejected_evidence_ids 表示同一轮评估的互斥结果。
+        - conflicts 与 gaps 必须能解释所有因冲突被拒绝的证据。
     """
 
     accepted_evidence_ids: tuple[str, ...]

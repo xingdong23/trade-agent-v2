@@ -1,7 +1,7 @@
 """Planning Agent 的公开清单。
 
 这里不放业务实现，只声明 Planning Agent 是谁、允许调用哪些 Tool、
-应该走哪条模型路由。课堂上可把它看成“Agent 身份证”。
+应该走哪条模型路由。Manifest 是跨 Supervisor 与 ToolPolicy 的稳定 Agent 身份契约。
 """
 
 from trade_agent.core.llm import ModelRoute

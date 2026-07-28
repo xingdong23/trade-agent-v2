@@ -27,14 +27,18 @@ from trade_agent.adapters.sqlite import (
 from trade_agent.agents.supervisor import BUSINESS_AGENTS
 from trade_agent.agents.supervisor.graph import build_supervisor_graph
 from trade_agent.apps.conversation_runtime import ConversationRunService
-from trade_agent.apps.journeys import (
-    ConversationJourney,
-    PlanningConversationJourney,
-    PlanningJourneyConfig,
-    ResearchJourneyBackend,
-    ResearchToPlanJourney,
-    planning_journey_config_from_settings,
-    research_to_plan_journey_config_from_settings,
+from trade_agent.apps.graph_invoker import SupervisorGraphInvoker
+from trade_agent.apps.workflows import (
+    ConversationWorkflow,
+    DefaultWorkflowRuntime,
+    PlanningConversationWorkflow,
+    PlanningWorkflowConfig,
+    ResearchToPlanWorkflow,
+    ResearchWorkflowBackend,
+    UnsupportedNoticeConfig,
+    WorkflowRegistry,
+    planning_workflow_config_from_settings,
+    research_to_plan_workflow_config_from_settings,
 )
 from trade_agent.capabilities.planning.application import PlanningService
 from trade_agent.capabilities.planning.cards import PlanningCardPresenter
@@ -80,7 +84,7 @@ class ApplicationContainer:
         hitl_service: 可选人机交互服务。
         checkpointer: 可选会话 checkpoint 实现。
         conversation_runtime: 可选会话中台运行时。
-        research_journey: 可选研究旅程后端。
+        research_workflow: 可选研究工作流后端。
         tracer: 可选结构化追踪器。
         market_provider: 可替换行情 provider。
         capability_tool_ids: 当前版本声明的 Tool ID 集合。
@@ -98,7 +102,7 @@ class ApplicationContainer:
     hitl_service: DefaultHitlService | None = None
     checkpointer: SQLiteThreadCheckpointer | None = None
     conversation_runtime: ConversationRunService | None = None
-    research_journey: ResearchJourneyBackend | None = None
+    research_workflow: ResearchWorkflowBackend | None = None
     tracer: StructuredTracer | None = None
     market_provider: object | None = None
     capability_tool_ids: tuple[str, ...] = ()
@@ -137,10 +141,10 @@ def build_application_container(
     llm_client: LLMClient | None = None,
     tool_gateway: ToolGateway | None = None,
     market_provider: object | None = None,
-    research_journey: ResearchJourneyBackend | None = None,
+    research_workflow: ResearchWorkflowBackend | None = None,
     intent_classifier: IntentClassifier | None = None,
-    conversation_journeys: Iterable[ConversationJourney] | None = None,
-    planning_journey_config: PlanningJourneyConfig | None = None,
+    conversation_workflows: Iterable[ConversationWorkflow] | None = None,
+    planning_workflow_config: PlanningWorkflowConfig | None = None,
     agents: Iterable[AgentManifest] | None = None,
     capability_tools: Iterable[ToolProtocol] | None = None,
     worker_ids: Iterable[str] | None = None,
@@ -156,7 +160,7 @@ def build_application_container(
     4. 最后创建会话运行时，并把所有顶层对象放入容器。
 
     ``llm_client``、``tool_gateway`` 等关键字参数是测试接缝，也是未来接入真实
-    provider 的位置。``conversation_journeys`` 允许部署方整体替换业务旅程集合；
+    provider 的位置。``conversation_workflows`` 允许部署方整体替换业务工作流集合；
     未提供时才装配首版 Planning 及可选 Research-to-plan 默认插件。
     """
 
@@ -174,9 +178,9 @@ def build_application_container(
         namespace=settings.checkpoint.namespace,
     )
     planning = PlanningService()
-    resolved_planning_journey_config = planning_journey_config or (
-        planning_journey_config_from_settings(
-            settings.planning_journey,
+    resolved_planning_workflow_config = planning_workflow_config or (
+        planning_workflow_config_from_settings(
+            settings.planning_workflow,
             settings.market,
             settings.hitl,
         )
@@ -207,48 +211,60 @@ def build_application_container(
         tool_registry,
         ManifestToolPolicy(agent_tool_allowlists),
     )
-    # 会话运行时位于最外层，负责把 Graph、HITL、事件和业务能力串成一条流程。
-    conversation_runtime = ConversationRunService(
-        graph=graph,
-        database=database,
-        checkpointer=checkpointer,
-        event_store=event_store,
-        hitl_service=hitl_service,
-        intent_classifier=intent_classifier or ClarificationIntentClassifier(),
-        unregistered_journey_message=(settings.conversation_runtime.unregistered_journey_message),
-        tracer=tracer,
-    )
-    # 默认集合只是当前产品预置；部署方可以注入任意完整 Journey 插件集合。
-    resolved_journeys: tuple[ConversationJourney, ...]
-    if conversation_journeys is None:
-        defaults: list[ConversationJourney] = [
-            PlanningConversationJourney(
+    # 默认集合只是当前部署预置；部署方可以注入任意完整 Workflow 集合。
+    resolved_workflows: tuple[ConversationWorkflow, ...]
+    if conversation_workflows is None:
+        defaults: list[ConversationWorkflow] = [
+            PlanningConversationWorkflow(
                 planning=planning,
                 hitl_service=hitl_service,
-                config=resolved_planning_journey_config,
+                config=resolved_planning_workflow_config,
             )
         ]
-        if research_journey is not None:
+        if research_workflow is not None:
             defaults.append(
-                ResearchToPlanJourney(
-                    backend=research_journey,
+                ResearchToPlanWorkflow(
+                    backend=research_workflow,
                     planning=planning,
                     hitl_service=hitl_service,
                     interaction_ttl_seconds=settings.hitl.pending_ttl_seconds,
                     text_field_max_length=settings.hitl.text_field_max_length,
-                    config=research_to_plan_journey_config_from_settings(
-                        settings.research_to_plan_journey
+                    config=research_to_plan_workflow_config_from_settings(
+                        settings.research_to_plan_workflow
                     ),
                     presenter=PlanningCardPresenter(
-                        resolved_planning_journey_config.presenter_config
+                        resolved_planning_workflow_config.presenter_config
                     ),
                 )
             )
-        resolved_journeys = tuple(defaults)
+        resolved_workflows = tuple(defaults)
     else:
-        resolved_journeys = tuple(conversation_journeys)
-    for journey in resolved_journeys:
-        conversation_runtime.register_conversation_journey(journey)
+        resolved_workflows = tuple(conversation_workflows)
+    resolved_resource_names = (
+        tuple(resource_names) if resource_names is not None else settings.api.resource_names
+    )
+    workflow_registry = WorkflowRegistry(resolved_workflows)
+    workflow_runtime = DefaultWorkflowRuntime(
+        database=database,
+        event_store=event_store,
+        hitl_service=hitl_service,
+        tracer=tracer,
+        allowed_resource_names=resolved_resource_names,
+        unsupported_notice=UnsupportedNoticeConfig(
+            title=settings.conversation_runtime.unsupported_notice_title,
+            actions=settings.conversation_runtime.unsupported_notice_actions,
+        ),
+    )
+    # 会话入口只协调 Graph 路由与 Workflow 生命周期，不承载业务步骤或存储细节。
+    conversation_runtime = ConversationRunService(
+        graph=SupervisorGraphInvoker(graph),
+        checkpointer=checkpointer,
+        intent_classifier=intent_classifier or ClarificationIntentClassifier(),
+        workflow_registry=workflow_registry,
+        workflow_runtime=workflow_runtime,
+        unregistered_workflow_message=settings.conversation_runtime.unregistered_workflow_message,
+        tracer=tracer,
+    )
     resolved_llm = llm_client or _build_llm_client(settings)
     resolved_market_provider = market_provider
     if resolved_market_provider is None:
@@ -266,14 +282,12 @@ def build_application_container(
         hitl_service=hitl_service,
         checkpointer=checkpointer,
         conversation_runtime=conversation_runtime,
-        research_journey=research_journey,
+        research_workflow=research_workflow,
         tracer=tracer,
         market_provider=resolved_market_provider,
         capability_tool_ids=tuple(manifest.tool_id for manifest in tool_registry.manifests()),
         worker_ids=tuple(worker_ids) if worker_ids is not None else settings.worker.worker_ids,
-        resource_names=(
-            tuple(resource_names) if resource_names is not None else settings.api.resource_names
-        ),
+        resource_names=resolved_resource_names,
     )
 
 

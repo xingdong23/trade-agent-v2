@@ -4,18 +4,18 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 
-from trade_agent.apps.journeys.contracts import ConversationRuntimePort, JourneyStartContext
-from trade_agent.apps.journeys.planning import planning_presenter_config_from_settings
-from trade_agent.apps.journeys.research_to_plan import (
-    JOURNEY_RESEARCH_TO_PLAN,
+from trade_agent.apps.workflows.contracts import WorkflowRuntime, WorkflowStartContext
+from trade_agent.apps.workflows.planning import planning_presenter_config_from_settings
+from trade_agent.apps.workflows.research_to_plan import (
+    WORKFLOW_RESEARCH_TO_PLAN,
     PlanApprovalPayloadStrategy,
     PlanLineageConfig,
     PlanReviewConfig,
     ReminderApprovalConfig,
-    ResearchJourneyBackend,
-    ResearchJourneyResult,
-    ResearchToPlanJourney,
-    ResearchToPlanJourneyConfig,
+    ResearchToPlanWorkflow,
+    ResearchToPlanWorkflowConfig,
+    ResearchWorkflowBackend,
+    ResearchWorkflowResult,
     ReviewFeedbackDestinationOption,
     ScanReviewConfig,
     SecurityCandidate,
@@ -28,7 +28,7 @@ from trade_agent.capabilities.planning.application import PlanningService
 from trade_agent.capabilities.planning.cards import PlanningCardPresenter
 from trade_agent.capabilities.quantitative.cards import QuantitativeCardPresenter
 from trade_agent.capabilities.reminder.cards import ReminderCardPresenter
-from trade_agent.core.config import PlanningJourneySettings
+from trade_agent.core.config import PlanningWorkflowSettings
 from trade_agent.core.hitl import (
     DefaultHitlService,
     HumanInteraction,
@@ -132,7 +132,7 @@ class InMemoryHitlRepository(HitlRepository):
         return current
 
 
-class RecordingRuntime(ConversationRuntimePort):
+class RecordingRuntime(WorkflowRuntime):
     def __init__(self) -> None:
         self.interactions: list[HumanInteraction] = []
         self.cards: list[tuple[str, bool, object]] = []
@@ -210,7 +210,7 @@ class RecordingRuntime(ConversationRuntimePort):
         return value
 
 
-class ConfigurableResearchBackend(ResearchJourneyBackend):
+class ConfigurableResearchBackend(ResearchWorkflowBackend):
     def __init__(self) -> None:
         self.activated_channels: list[str] = []
 
@@ -221,7 +221,7 @@ class ConfigurableResearchBackend(ResearchJourneyBackend):
             SecurityCandidate(f"US:NYSE:{symbol}", f"{symbol} Depositary (NYSE)"),
         )
 
-    def prepare(self, security_id: str, *, owner_id: str, run_id: str) -> ResearchJourneyResult:
+    def prepare(self, security_id: str, *, owner_id: str, run_id: str) -> ResearchWorkflowResult:
         del owner_id, run_id
         research_card = MarketResearchCardPresenter().present(
             CapabilityResult(
@@ -299,7 +299,7 @@ class ConfigurableResearchBackend(ResearchJourneyBackend):
                 },
             )
         )
-        return ResearchJourneyResult(
+        return ResearchWorkflowResult(
             security_id=security_id,
             research_card=research_card,
             scan_progress_started=progress_started,
@@ -362,14 +362,14 @@ class ConfigurableResearchBackend(ResearchJourneyBackend):
         )
 
 
-def _context() -> JourneyStartContext:
-    return JourneyStartContext(
+def _context() -> WorkflowStartContext:
+    return WorkflowStartContext(
         owner_id="owner-a",
         thread_id="thread-1",
         run_id="run-1",
         classification=IntentClassification(
             intent=Intent.RESEARCH,
-            journey_id=JOURNEY_RESEARCH_TO_PLAN,
+            workflow_id=WORKFLOW_RESEARCH_TO_PLAN,
             confidence=1.0,
             reason_code="classified",
             entities=(("symbol", "NVDA"),),
@@ -387,13 +387,13 @@ def _require_list(value: JsonValue) -> list[JsonValue]:
     return value
 
 
-def test_research_to_plan_journey_uses_injected_configuration() -> None:
+def test_research_to_plan_workflow_uses_injected_configuration() -> None:
     repository = InMemoryHitlRepository()
     hitl = DefaultHitlService(repository)
     backend = ConfigurableResearchBackend()
     planning = PlanningService()
     runtime = RecordingRuntime()
-    config = ResearchToPlanJourneyConfig(
+    config = ResearchToPlanWorkflowConfig(
         security_clarification=SecurityClarificationConfig(
             option_title="请选择上市地",
             title="需要先确认目标证券",
@@ -435,7 +435,7 @@ def test_research_to_plan_journey_uses_injected_configuration() -> None:
         ),
         plan_lineage=PlanLineageConfig(source_type="research_artifact"),
     )
-    journey = ResearchToPlanJourney(
+    workflow = ResearchToPlanWorkflow(
         backend=backend,
         planning=planning,
         hitl_service=hitl,
@@ -443,11 +443,11 @@ def test_research_to_plan_journey_uses_injected_configuration() -> None:
         text_field_max_length=240,
         config=config,
         presenter=PlanningCardPresenter(
-            planning_presenter_config_from_settings(PlanningJourneySettings())
+            planning_presenter_config_from_settings(PlanningWorkflowSettings())
         ),
     )
 
-    started = journey.start(_context(), runtime)
+    started = workflow.start(_context(), runtime)
     assert started.status == "waiting_for_human"
     choice = repository.get("owner-a", started.pending_interaction_id or "")
     assert choice is not None
@@ -467,7 +467,7 @@ def test_research_to_plan_journey_uses_injected_configuration() -> None:
         response={"selected_security": "US:NASDAQ:NVDA"},
         resolution="continue",
     )
-    scan_review_card = journey.resume(clarified, runtime)
+    scan_review_card = workflow.resume(clarified, runtime)
     assert scan_review_card is not None
     scan_review = repository.list_pending("owner-a")[0]
     assert scan_review.subject_type == "research_scan_review"
@@ -485,7 +485,7 @@ def test_research_to_plan_journey_uses_injected_configuration() -> None:
         response={},
         resolution="confirm",
     )
-    plan_approval_card = journey.resume(reviewed_scan, runtime)
+    plan_approval_card = workflow.resume(reviewed_scan, runtime)
     assert plan_approval_card is not None
     plan_approval = repository.list_pending("owner-a")[0]
     assert plan_approval.subject_type == "research_plan_approval"
@@ -503,7 +503,7 @@ def test_research_to_plan_journey_uses_injected_configuration() -> None:
         response={},
         resolution="confirm",
     )
-    artifact_card = journey.resume(approved_plan, runtime)
+    artifact_card = workflow.resume(approved_plan, runtime)
     assert artifact_card is not None
     assert artifact_card.kind == "artifact.trade_plan"
     reminder_approval = repository.list_pending("owner-a")[0]
@@ -522,7 +522,7 @@ def test_research_to_plan_journey_uses_injected_configuration() -> None:
         response={},
         resolution="confirm",
     )
-    reminder_card = journey.resume(approved_reminder, runtime)
+    reminder_card = workflow.resume(approved_reminder, runtime)
     assert reminder_card is not None
     assert reminder_card.kind == "artifact.reminder"
     assert backend.activated_channels == ["desktop_push"]
@@ -550,7 +550,7 @@ def test_research_to_plan_journey_uses_injected_configuration() -> None:
         },
         resolution="confirm",
     )
-    reviewed_card = journey.resume(completed_review, runtime)
+    reviewed_card = workflow.resume(completed_review, runtime)
     assert reviewed_card is not None
     assert reviewed_card.kind == "artifact.trade_plan"
     assert len(runtime.saved_resources) == 1

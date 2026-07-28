@@ -100,24 +100,28 @@ Quantitative 不属于 Agent。它是 Research 或 Strategy 可以通过 Tool �
 和会话运行时，最后交给 API、CLI 或 worker。测试可以在这里注入 fake，而无须修改
 业务代码。
 
-`apps/conversation_runtime.py` 是当前真实会话主线。它是一个确定性状态机：负责发布
-Card、创建 HITL、保存恢复上下文以及在人工响应后继续下一步。它不负责预测算法。
+`apps/conversation_runtime.py` 是当前会话入口，只负责启动 run、调用 Supervisor Graph、
+校验 Workflow 路由和委托 HITL 恢复。Card、事件、恢复上下文和恢复收据由
+`apps/workflows/runtime.py` 统一持久化；具体业务状态机位于 Workflow 与 capability。
 
 自然语言不会在这里用固定短语判断。组合根把三个部分连接起来：
 
 ```text
 IntentClassifier
-  -> IntentClassification(intent, journey_id, entities)
-  -> JourneyRegistry[journey_id]
-  -> ConversationJourney.start(context)
+  -> IntentClassification(intent, workflow_id, entities)
+  -> SupervisorGraphInvoker
+  -> selected_agent_id
+  -> WorkflowRegistry[workflow_id]
+  -> ConversationWorkflow.start(context)
 ```
 
 `IntentClassifier` 可以由结构化 LiteLLM、规则引擎或租户配置实现。运行时只接受
-经过校验的 `journey_id` 和实体；`JourneyRegistry` 决定当前部署实际启用哪些旅程。
-未知旅程会安全拒绝，不会使用相似关键词猜测。测试中的 `MappingIntentClassifier`
-只用于声明课程场景数据，不属于生产业务判断。
+经过校验的 `workflow_id` 和实体；`WorkflowRegistry` 决定当前部署实际启用哪些工作流。
+未知工作流、或 Graph 所选 Agent 与 Workflow 声明不一致时会安全拒绝，不会使用相似
+关键词猜测。测试中的 `MappingIntentClassifier` 只用于声明测试 fixture，不属于生产
+业务判断。
 
-Journey 是完整插件，不只是一个启动函数：它同时声明输入约束，并负责自己创建的
+Workflow 是完整插件，不只是一个启动函数：它同时声明输入约束，并负责自己创建的
 HITL 节点如何恢复。这样增加新业务只需新增插件并注册，不需要修改中台运行时。
 
 这里要区分两类“固定值”：
@@ -125,22 +129,24 @@ HITL 节点如何恢复。这样增加新业务只需新增插件并注册，不
 - `planning.create_plan`、`interaction.form`、`card.created` 是版本稳定的协议 ID，类似
   API 路径或数据库字段，必须集中定义和校验。
 - “新增一个交易”“我要买”“默认创建买入计划”是自然语言或业务默认值，只能位于
-  分类 adapter、具体 Journey、配置或课程示例中，绝不能成为通用运行时的条件判断。
+  分类 adapter、具体 Workflow、配置或测试 fixture 中，绝不能成为通用运行时的条件判断。
 
 ## 3. 一次“我要买 NVDA”如何运行
 
 1. Web 调用 `POST /api/conversations/runs`，API 解析用户身份和请求。
-2. `IntentClassifier` 输出 Planning 意图、`planning.create_plan` 旅程和 `NVDA` 实体。
+2. `IntentClassifier` 输出 Planning 意图、`planning.create_plan` 工作流和 `NVDA` 实体。
 3. `ConversationRunService.start_run()` 创建 `run_id`、绑定 thread，并写入
    `run.started` 事件。
 4. Supervisor graph 接收 `AgentState`，把请求路由到 Planning。
-5. `JourneyRegistry` 找到组合根注册的计划 handler。系统明确返回“不支持真实下单”
+5. `WorkflowRegistry` 同时校验 `workflow_id` 与 Graph 返回的 Agent ID，再找到组合根注册
+   的计划 Workflow。系统明确返回“不支持真实下单”
    的 Card，但可以继续创建研究计划。
 6. Planning capability 创建草稿；运行时创建表单型 HITL，并发布
    `interaction.form` Card。
 7. Web 通过 SSE 收到 Card，渲染输入项。此时后端已经暂停，不会擅自批准。
 8. 用户提交表单，API 校验 card revision、payload hash、subject version 和幂等键。
-9. `handle_resolved_interaction()` 根据 `subject_type` 找到恢复节点，生成审批 Card。
+9. `handle_resolved_interaction()` 通过 `WorkflowRegistry` 按 `subject_type` 找到负责的
+   Workflow，由该 Workflow 生成审批 Card。
 10. 用户确认后 Planning domain 才允许草稿转为 active，并发布
    `artifact.trade_plan` Card。
 
@@ -177,7 +183,7 @@ Research Agent
 ## 6. 当前实现边界
 
 已经接通的主线包括 SQLite、HITL、Card、SSE、API、CLI、Web，以及“新增一个交易”
-和“我要买 NVDA”的 Planning 旅程。研究、量化、watchlist、策略和提醒具备领域服务、
+和“我要买 NVDA”的 Planning 工作流。研究、量化、watchlist、策略和提醒具备领域服务、
 Tool、适配器与测试。
 
 仍需注意以下默认装配限制：
@@ -186,7 +192,7 @@ Tool、适配器与测试。
 - 默认行情 provider 是空的 `FakeMarketProvider`。
 - 默认 ToolRegistry 当前只装配 Planning Tool。
 - Supervisor 的执行与渲染节点仍是骨架，主要业务由确定性会话状态机推进。
-- 完整 Research 旅程依赖注入 `ResearchJourneyBackend`；生产 façade 与 worker 仍待装配。
+- 完整 Research 工作流依赖注入 `ResearchWorkflowBackend`；生产 façade 与 worker 仍待装配。
 - 默认未配置生产 `IntentClassifier` 时会进入安全澄清；不会在中台代码中内置自然语言
   关键词。真实 LiteLLM 分类 adapter 仍需在生产组合根装配。
 

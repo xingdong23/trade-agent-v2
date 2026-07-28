@@ -18,9 +18,9 @@ from trade_agent.adapters.sqlite.json_support import payload_hash
 from trade_agent.apps.api import create_app
 from trade_agent.apps.cli import execute
 from trade_agent.apps.container import ApplicationContainer, build_application_container
-from trade_agent.apps.journeys import (
-    ResearchJourneyBackend,
-    ResearchJourneyResult,
+from trade_agent.apps.workflows import (
+    ResearchWorkflowBackend,
+    ResearchWorkflowResult,
     SecurityCandidate,
     planning_presenter_config_from_settings,
 )
@@ -103,7 +103,7 @@ from trade_agent.core.config import (
     AuthenticationSettings,
     DatabaseSettings,
     MarketSettings,
-    PlanningJourneySettings,
+    PlanningWorkflowSettings,
 )
 from trade_agent.core.hitl import HumanInteraction, InteractionStatus, InteractionType
 from trade_agent.core.llm import JsonValue, LLMMessage, LLMRequest, LLMResponse, ModelRoute
@@ -465,8 +465,8 @@ def _scan_submission(snapshot: ScanUniverseSnapshot) -> tuple[RecordingRuntime, 
     return runtime, ScanEvaluator(inference).evaluate(submission)
 
 
-class AcceptanceResearchJourney(ResearchJourneyBackend):
-    """用真实 capability service 和确定性 fake 外部依赖驱动验收旅程。"""
+class AcceptanceResearchWorkflow(ResearchWorkflowBackend):
+    """用真实 capability service 和确定性 fake 外部依赖驱动验收工作流。"""
 
     def __init__(self, llm: FakeLLMClient) -> None:
         self._llm = llm
@@ -493,19 +493,19 @@ class AcceptanceResearchJourney(ResearchJourneyBackend):
             for item in resolution.candidates
         )
 
-    def prepare(self, security_id: str, *, owner_id: str, run_id: str) -> ResearchJourneyResult:
+    def prepare(self, security_id: str, *, owner_id: str, run_id: str) -> ResearchWorkflowResult:
         del run_id
         assert owner_id == "owner-a"
         assert security_id == "US:NASDAQ:NVDA"
         research_card = MarketResearchCardPresenter().present(_research_payload())
 
-        watchlist = WatchlistService(owner_id=owner_id, watchlist_id="journey-watchlist")
+        watchlist = WatchlistService(owner_id=owner_id, watchlist_id="workflow-watchlist")
         imported = watchlist.classify_import((("NVDA", security_id, ImportStatus.ACCEPTED),))
         watchlist.approve_import(
             imported,
             actor_owner_id=owner_id,
             approved=True,
-            idempotency_key="journey-watchlist-import",
+            idempotency_key="workflow-watchlist-import",
             source_type="research",
             source_reference=research_card.source.source_id,
             imported_at=NOW,
@@ -518,7 +518,7 @@ class AcceptanceResearchJourney(ResearchJourneyBackend):
         presenter = QuantitativeCardPresenter()
         progress_started = presenter.present(
             CapabilityResult(
-                "journey-scan",
+                "workflow-scan",
                 1,
                 {
                     "card_type": "scan_progress",
@@ -532,7 +532,7 @@ class AcceptanceResearchJourney(ResearchJourneyBackend):
         )
         progress_completed = presenter.present(
             CapabilityResult(
-                "journey-scan",
+                "workflow-scan",
                 2,
                 {
                     "card_type": "scan_progress",
@@ -546,7 +546,7 @@ class AcceptanceResearchJourney(ResearchJourneyBackend):
         )
         scan_card = presenter.present(
             CapabilityResult(
-                "journey-scan-result",
+                "workflow-scan-result",
                 1,
                 {
                     "card_type": "scan_result",
@@ -564,7 +564,7 @@ class AcceptanceResearchJourney(ResearchJourneyBackend):
                 },
             )
         )
-        return ResearchJourneyResult(
+        return ResearchWorkflowResult(
             security_id,
             research_card,
             progress_started,
@@ -589,7 +589,7 @@ class AcceptanceResearchJourney(ResearchJourneyBackend):
 
     def summarize(self, scan_result: Mapping[str, JsonValue], *, owner_id: str, run_id: str) -> str:
         projected = ScanResultSummaryProjector.project(
-            (PersistedScanResultView(run_id, "journey-scan-result", 1, scan_result),)
+            (PersistedScanResultView(run_id, "workflow-scan-result", 1, scan_result),)
         )
         response = asyncio.run(
             self._llm.complete(
@@ -669,7 +669,7 @@ def test_single_conversation_run_drives_research_scan_plan_reminder_and_review(
     tmp_path: Path,
 ) -> None:
     settings = AppSettings(
-        database=DatabaseSettings(path=tmp_path / "conversation-journey.db"),
+        database=DatabaseSettings(path=tmp_path / "conversation-workflow.db"),
         authentication=AuthenticationSettings(mode="development", development_user_id="owner-a"),
     )
     llm = FakeLLMClient(
@@ -680,7 +680,7 @@ def test_single_conversation_run_drives_research_scan_plan_reminder_and_review(
             )
         ]
     )
-    journey = AcceptanceResearchJourney(llm)
+    workflow = AcceptanceResearchWorkflow(llm)
     classifier = MappingIntentClassifier(
         {
             "研究 NVDA 并生成交易计划": IntentClassification(
@@ -695,7 +695,7 @@ def test_single_conversation_run_drives_research_scan_plan_reminder_and_review(
     container = build_application_container(
         settings,
         llm_client=llm,
-        research_journey=journey,
+        research_workflow=workflow,
         intent_classifier=classifier,
     )
     client = TestClient(create_app(settings, container))
@@ -704,7 +704,7 @@ def test_single_conversation_run_drives_research_scan_plan_reminder_and_review(
     started = client.post(
         "/api/conversations/runs",
         headers=headers,
-        json={"thread_id": "research-journey", "message": "研究 NVDA 并生成交易计划"},
+        json={"thread_id": "research-workflow", "message": "研究 NVDA 并生成交易计划"},
     )
     assert started.status_code == 200
     run = started.json()
@@ -728,7 +728,7 @@ def test_single_conversation_run_drives_research_scan_plan_reminder_and_review(
                     "values": dict(values),
                     "interaction_version": source["version"],
                     "payload_hash": card["payload_hash"],
-                    "idempotency_key": f"journey:{source['source_id']}:{action}",
+                    "idempotency_key": f"workflow:{source['source_id']}:{action}",
                     "card_revision": card["revision"],
                 },
             ),
@@ -752,7 +752,7 @@ def test_single_conversation_run_drives_research_scan_plan_reminder_and_review(
     assert plan_artifact["kind"] == "artifact.trade_plan"
     assert "已激活" in plan_artifact["data"]["summary"]
 
-    pending = client.get("/api/hitl/pending?thread_id=research-journey", headers=headers).json()[
+    pending = client.get("/api/hitl/pending?thread_id=research-workflow", headers=headers).json()[
         "items"
     ]
     reminder_approval = pending[0]["card"]
@@ -761,7 +761,7 @@ def test_single_conversation_run_drives_research_scan_plan_reminder_and_review(
     assert approved_reminder.status_code == 200, approved_reminder.text
     assert approved_reminder.json()["card"]["kind"] == "artifact.reminder"
 
-    pending = client.get("/api/hitl/pending?thread_id=research-journey", headers=headers).json()[
+    pending = client.get("/api/hitl/pending?thread_id=research-workflow", headers=headers).json()[
         "items"
     ]
     final_review = pending[0]["card"]
@@ -780,11 +780,11 @@ def test_single_conversation_run_drives_research_scan_plan_reminder_and_review(
     assert "已复盘" in completed.json()["card"]["data"]["summary"]
 
     assert (
-        client.get("/api/hitl/pending?thread_id=research-journey", headers=headers).json()["items"]
+        client.get("/api/hitl/pending?thread_id=research-workflow", headers=headers).json()["items"]
         == []
     )
     artifact_items = client.get(
-        "/api/artifacts?thread_id=research-journey", headers=headers
+        "/api/artifacts?thread_id=research-workflow", headers=headers
     ).json()["items"]
     artifact_kinds = {item["card"]["kind"] for item in artifact_items}
     assert {
@@ -1104,7 +1104,7 @@ def test_acceptance_flow_covers_ambiguous_research_scan_plan_reminder_and_review
         occurred_at=NOW + timedelta(minutes=2),
     )
     plan_artifact = PlanningCardPresenter(
-        planning_presenter_config_from_settings(PlanningJourneySettings())
+        planning_presenter_config_from_settings(PlanningWorkflowSettings())
     ).plan_artifact(active_plan)
     assert plan_artifact.kind == "artifact.trade_plan"
 
@@ -1330,7 +1330,7 @@ def test_acceptance_flow_rejects_cross_user_tampering_timeouts_non_us_and_provid
         raise AssertionError("expected unsupported_market")
 
     unsupported = PlanningCardPresenter(
-        planning_presenter_config_from_settings(PlanningJourneySettings())
+        planning_presenter_config_from_settings(PlanningWorkflowSettings())
     ).unsupported(
         reference_id="request-1",
         unsupported_kind="execute_trade",
@@ -1391,7 +1391,7 @@ def test_acceptance_flow_covers_trade_choice_form_errors_edit_supersede_and_idem
     bundle = _bundle(tmp_path)
     headers = {"X-User-ID": "owner-a"}
     presenter = PlanningCardPresenter(
-        planning_presenter_config_from_settings(PlanningJourneySettings())
+        planning_presenter_config_from_settings(PlanningWorkflowSettings())
     )
 
     choice = presenter.intent_choice("choice-1")

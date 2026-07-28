@@ -133,8 +133,8 @@ def execute_command(_: AgentState) -> AgentState:
 def render(state: AgentState) -> AgentState:
     """最终渲染节点。
 
-    当前骨架阶段只验证 checkpoint 状态是否自洽；真正的 Card 生成仍在外层
-    ``ConversationRunService`` 中完成。
+    当前骨架阶段只验证 checkpoint 状态是否自洽；真正的 Card 由具体 Workflow 的
+    presenter 生成，并通过 ``ConversationRuntime`` 持久化和发布。
     """
 
     validate_checkpoint_state(state)

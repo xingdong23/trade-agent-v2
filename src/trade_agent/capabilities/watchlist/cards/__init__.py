@@ -8,6 +8,7 @@ from hashlib import sha256
 from typing import Any
 
 from trade_agent.capabilities.watchlist.contracts import (
+    CapabilityCardPresenter,
     CapabilityResult,
     ClassificationSuggestion,
     ImportRow,
@@ -35,7 +36,7 @@ _ROW_LABEL: dict[ImportStatus, str] = {
 }
 
 
-class WatchlistCardPresenter:
+class WatchlistCardPresenter(CapabilityCardPresenter):
     def import_form(
         self,
         watchlist: Watchlist,

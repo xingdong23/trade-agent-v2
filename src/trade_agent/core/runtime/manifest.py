@@ -46,7 +46,11 @@ class AgentManifest:
 class AgentRouteRegistry:
     """保存 Supervisor 当前允许路由到的业务 Agent 集合。
 
-    设计意图:
+    Attributes:
+        manifests: 当前部署注册的全部业务 Agent manifest。
+        clarification_agent_id: 全局安全回退路由 ID，默认保留为 ``clarification``。
+
+    Invariants:
         - 业务 Agent 的可路由目标来自 ``AgentManifest`` 注册，而不是写死在图代码里。
         - ``clarification`` 始终保留为框架级安全回退，不允许业务 Agent 抢占该 ID。
         - Registry 只负责校验与查找，不关心图实现、提示词拼装或 Tool 细节。

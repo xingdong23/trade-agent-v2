@@ -103,7 +103,23 @@ class ToolRequest:
 
 
 class ToolErrorCode(StrEnum):
-    """Tool 实现和 Gateway 共享的稳定错误类别。"""
+    """Tool 实现和 Gateway 共享的稳定错误类别。
+
+    Attributes:
+        UNKNOWN_TOOL: 请求指向未注册或不可见的 Tool。
+        FORBIDDEN: 当前 Agent、身份或策略不允许执行该 Tool。
+        INVALID_INPUT: 输入参数未通过 schema 或更细粒度校验。
+        INVALID_OUTPUT: Tool 返回值未通过输出协议校验。
+        HITL_REQUIRED: 执行前缺少必要的人机批准。
+        IDEMPOTENCY_KEY_REQUIRED: 写操作缺少稳定幂等键。
+        CONFLICT: 幂等、版本或资源状态发生冲突。
+        TIMEOUT: Tool 执行超时。
+        UNAVAILABLE: Tool 依赖的服务暂不可用。
+        INTERNAL: Tool 执行中出现未分类内部错误。
+
+    Invariants:
+        - 枚举值是 Tool Gateway、策略层和调用方共享的稳定错误码。
+    """
 
     UNKNOWN_TOOL = "unknown_tool"
     FORBIDDEN = "forbidden"

@@ -1,4 +1,4 @@
-"""验证 ConversationRunService 的 journey 插件扩展点。"""
+"""验证 ConversationRunService 的 workflow 插件扩展点。"""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from trade_agent.adapters.observability import StructuredTracer
 from trade_agent.adapters.sqlite import (
     SQLiteDatabase,
     SQLiteEventStore,
@@ -13,11 +14,15 @@ from trade_agent.adapters.sqlite import (
     SQLiteThreadCheckpointer,
 )
 from trade_agent.apps.conversation_runtime import ConversationRunService
-from trade_agent.apps.journeys import (
-    ConversationJourney,
+from trade_agent.apps.graph_invoker import GraphInvoker
+from trade_agent.apps.workflows import (
     ConversationRunResult,
-    ConversationRuntimePort,
-    JourneyStartContext,
+    ConversationWorkflow,
+    DefaultWorkflowRuntime,
+    UnsupportedNoticeConfig,
+    WorkflowRegistry,
+    WorkflowRuntime,
+    WorkflowStartContext,
 )
 from trade_agent.core.hitl import (
     DefaultHitlService,
@@ -31,24 +36,38 @@ from trade_agent.core.testing import MappingIntentClassifier
 
 
 @dataclass(slots=True)
-class _FakeGraph:
+class _FakeGraph(GraphInvoker):
     """满足 GraphInvoker 协议的测试替身。"""
 
     invocations: list[AgentState]
 
     def invoke(self, input: AgentState) -> dict[str, object]:
         self.invocations.append(input)
-        return {}
+        return {**input, "selected_agent_id": Intent.PLANNING.value}
 
 
-class _EchoJourney(ConversationJourney):
-    """用于验证 runtime 插件扩展点的最小 fake journey。"""
+@dataclass(slots=True)
+class _MismatchedGraph(GraphInvoker):
+    """返回与分类结果不一致 Agent ID 的 Supervisor fake。"""
+
+    def invoke(self, input: AgentState) -> dict[str, object]:
+        """模拟 Graph 将请求路由给另一个 Agent。"""
+
+        return {**input, "selected_agent_id": Intent.RESEARCH.value}
+
+
+class _EchoWorkflow(ConversationWorkflow):
+    """用于验证 runtime 插件扩展点的最小 fake workflow。"""
 
     def __init__(self, *, hitl_service: DefaultHitlService) -> None:
         self._hitl = hitl_service
 
     @property
-    def journey_ids(self) -> tuple[str, ...]:
+    def agent_id(self) -> str:
+        return Intent.PLANNING.value
+
+    @property
+    def workflow_ids(self) -> tuple[str, ...]:
         return ("fake.echo",)
 
     @property
@@ -57,8 +76,8 @@ class _EchoJourney(ConversationJourney):
 
     def start(
         self,
-        context: JourneyStartContext,
-        runtime: ConversationRuntimePort,
+        context: WorkflowStartContext,
+        runtime: WorkflowRuntime,
     ) -> ConversationRunResult:
         interaction = self._hitl.create(
             HumanInteraction(
@@ -68,7 +87,7 @@ class _EchoJourney(ConversationJourney):
                 status=InteractionStatus.PENDING,
                 payload={
                     "title": "补充扩展示例",
-                    "description": "输入一段文本，验证 fake journey 可以独立接入 runtime。",
+                    "description": "输入一段文本，验证 fake workflow 可以独立接入 runtime。",
                     "text_fallback": "请输入扩展示例文本。",
                 },
                 version=1,
@@ -100,15 +119,15 @@ class _EchoJourney(ConversationJourney):
     def resume(
         self,
         interaction: HumanInteraction,
-        runtime: ConversationRuntimePort,
+        runtime: WorkflowRuntime,
     ) -> CardEnvelope | None:
         runtime.publish_interaction(interaction, "card.resolved")
         note = str((interaction.response or {}).get("note", ""))
         card = runtime.create_unsupported_notice(
             reference_id=interaction.interaction_id,
             unsupported_kind="fake_echo_complete",
-            message=f"fake journey 已处理: {note}",
-            source_type="fake_journey",
+            message=f"fake workflow 已处理: {note}",
+            source_type="fake_workflow",
         )
         return runtime.publish_card(
             interaction.owner_id,
@@ -119,17 +138,20 @@ class _EchoJourney(ConversationJourney):
         )
 
 
-def _build_runtime(tmp_path: Path) -> tuple[ConversationRunService, DefaultHitlService, _FakeGraph]:
-    database = SQLiteDatabase(tmp_path / "journey-runtime.db")
+def _build_runtime(
+    tmp_path: Path,
+    *,
+    graph_override: GraphInvoker | None = None,
+) -> tuple[ConversationRunService, DefaultHitlService, _FakeGraph]:
+    database = SQLiteDatabase(tmp_path / "workflow-runtime.db")
     database.initialize()
     graph = _FakeGraph([])
     hitl_service = DefaultHitlService(SQLiteHitlRepository(database))
+    tracer = StructuredTracer()
+    workflow = _EchoWorkflow(hitl_service=hitl_service)
     runtime = ConversationRunService(
-        graph=graph,
-        database=database,
-        checkpointer=SQLiteThreadCheckpointer(database, namespace="test-journey"),
-        event_store=SQLiteEventStore(database),
-        hitl_service=hitl_service,
+        graph=graph_override or graph,
+        checkpointer=SQLiteThreadCheckpointer(database, namespace="test-workflow"),
         intent_classifier=MappingIntentClassifier(
             {
                 "自定义扩展示例": IntentClassification(
@@ -140,15 +162,26 @@ def _build_runtime(tmp_path: Path) -> tuple[ConversationRunService, DefaultHitlS
                 )
             }
         ),
-        unregistered_journey_message="测试环境没有注册对应 Journey",
+        workflow_registry=WorkflowRegistry((workflow,)),
+        workflow_runtime=DefaultWorkflowRuntime(
+            database=database,
+            event_store=SQLiteEventStore(database),
+            hitl_service=hitl_service,
+            tracer=tracer,
+            allowed_resource_names=("reviews",),
+            unsupported_notice=UnsupportedNoticeConfig(
+                title="测试请求不受支持",
+                actions=("refresh",),
+            ),
+        ),
+        unregistered_workflow_message="测试环境没有注册对应 Workflow",
+        tracer=tracer,
     )
     return runtime, hitl_service, graph
 
 
-def test_runtime_can_extend_with_fake_journey_without_modifying_runtime(tmp_path: Path) -> None:
+def test_runtime_can_extend_with_fake_workflow_without_modifying_runtime(tmp_path: Path) -> None:
     runtime, hitl_service, graph = _build_runtime(tmp_path)
-    runtime.register_conversation_journey(_EchoJourney(hitl_service=hitl_service))
-
     started = runtime.start_run(
         owner_id="owner-a",
         thread_id="thread-a",
@@ -176,7 +209,7 @@ def test_runtime_can_extend_with_fake_journey_without_modifying_runtime(tmp_path
 
     assert resumed is not None
     assert resumed.kind == "notice.unsupported"
-    assert resumed.data["message"] == "fake journey 已处理: 无需修改 runtime"
+    assert resumed.data["message"] == "fake workflow 已处理: 无需修改 runtime"
 
 
 def test_runtime_preserves_case_sensitive_entity_values() -> None:
@@ -188,4 +221,22 @@ def test_runtime_preserves_case_sensitive_entity_values() -> None:
         entities=(("note", "  CamelCase/API-Key  "),),
     )
 
-    assert ConversationRunService.required_entity(classification, "note") == "CamelCase/API-Key"
+    context = WorkflowStartContext("owner-a", "thread-a", "run-a", classification)
+    assert context.require_entity("note") == "CamelCase/API-Key"
+
+
+def test_runtime_cannot_bypass_supervisor_agent_route(tmp_path: Path) -> None:
+    """Graph 选择的 Agent 与 Workflow 声明不一致时必须安全关闭。"""
+
+    runtime, _, _ = _build_runtime(tmp_path, graph_override=_MismatchedGraph())
+
+    result = runtime.start_run(
+        owner_id="owner-a",
+        thread_id="thread-a",
+        message="自定义扩展示例",
+        correlation_id="corr-route-mismatch",
+    )
+
+    assert result.status == "unsupported"
+    assert result.card is not None
+    assert result.card.kind == "notice.unsupported"

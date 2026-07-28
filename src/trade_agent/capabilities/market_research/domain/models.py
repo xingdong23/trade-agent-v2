@@ -19,13 +19,27 @@ type FrozenJsonValue = (
 
 
 class Market(StrEnum):
-    """首版允许研究的市场枚举。"""
+    """首版允许研究的市场枚举。
+
+    Attributes:
+        US: 美国交易所上市证券市场。
+
+    Invariants:
+        - 首版只允许美国市场，其他市场必须返回 ``unsupported_market``。
+    """
 
     US = "US"
 
 
 class SecurityResolutionStatus(StrEnum):
-    """证券解析的确定性结果状态。"""
+    """证券解析的确定性结果状态。
+
+    Attributes:
+        RESOLVED: 输入唯一解析为一个规范证券。
+        AMBIGUOUS: 输入对应多个候选证券，需要 HITL 澄清。
+        NOT_FOUND: provider 无法找到对应证券。
+        UNSUPPORTED_MARKET: 证券存在但不属于首版支持的美国市场。
+    """
 
     RESOLVED = "resolved"
     AMBIGUOUS = "ambiguous"

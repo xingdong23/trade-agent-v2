@@ -6,13 +6,13 @@ import pytest
 from trade_agent.adapters.llm.litellm import LiteLLMClient
 from trade_agent.adapters.market_providers import FakeMarketProvider
 from trade_agent.apps.container import build_application_container
-from trade_agent.apps.journeys import ConversationRunResult, ConversationRuntimePort
-from trade_agent.apps.journeys.contracts import JourneyStartContext
+from trade_agent.apps.workflows import ConversationRunResult, WorkflowRuntime
+from trade_agent.apps.workflows.contracts import WorkflowStartContext
 from trade_agent.core.config import AppSettings, DatabaseSettings
 from trade_agent.core.hitl import HumanInteraction
 from trade_agent.core.llm import ModelRoute
 from trade_agent.core.presentation import CardEnvelope
-from trade_agent.core.runtime import AgentManifest
+from trade_agent.core.runtime import AgentManifest, Intent
 from trade_agent.core.testing import FakeLLMClient, FakeToolGateway
 from trade_agent.core.tools import ToolManifest, ToolRequest, ToolResult
 
@@ -38,11 +38,15 @@ class CustomTool:
         return ToolResult("ok")
 
 
-class CustomJourney:
-    """验证组合根可以直接注入的最小 Journey 插件。"""
+class CustomWorkflow:
+    """验证组合根可以直接注入的最小 Workflow 插件。"""
 
     @property
-    def journey_ids(self) -> tuple[str, ...]:
+    def agent_id(self) -> str:
+        return Intent.PLANNING.value
+
+    @property
+    def workflow_ids(self) -> tuple[str, ...]:
         return ("custom.lesson",)
 
     @property
@@ -51,8 +55,8 @@ class CustomJourney:
 
     def start(
         self,
-        context: JourneyStartContext,
-        runtime: ConversationRuntimePort,
+        context: WorkflowStartContext,
+        runtime: WorkflowRuntime,
     ) -> ConversationRunResult:
         del runtime
         return ConversationRunResult(context.run_id, context.thread_id, "completed")
@@ -60,7 +64,7 @@ class CustomJourney:
     def resume(
         self,
         interaction: HumanInteraction,
-        runtime: ConversationRuntimePort,
+        runtime: WorkflowRuntime,
     ) -> CardEnvelope | None:
         del interaction, runtime
         return None
@@ -162,16 +166,16 @@ def test_deployment_policy_rejects_unknown_agent_id(tmp_path: Path) -> None:
         build_application_container(settings)
 
 
-def test_composition_root_accepts_replacement_journey_set(tmp_path: Path) -> None:
-    settings = AppSettings(database=DatabaseSettings(path=tmp_path / "custom-journey.db"))
+def test_composition_root_accepts_replacement_workflow_set(tmp_path: Path) -> None:
+    settings = AppSettings(database=DatabaseSettings(path=tmp_path / "custom-workflow.db"))
 
     container = build_application_container(
         settings,
-        conversation_journeys=(CustomJourney(),),
+        conversation_workflows=(CustomWorkflow(),),
     )
 
     assert container.conversation_runtime is not None
-    assert container.conversation_runtime.registered_journey_ids() == ("custom.lesson",)
+    assert container.conversation_runtime.registered_workflow_ids == ("custom.lesson",)
 
 
 def _production_settings(tmp_path: Path) -> AppSettings:

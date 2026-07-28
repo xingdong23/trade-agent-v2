@@ -8,15 +8,17 @@ from trade_agent.core.tools import ToolGateway
 from .prompt import SYSTEM_PROMPT
 
 
-def _prepare(state: AgentState) -> AgentState:
-    return {**state, "selected_agent_id": "research"}
+def _prepare(state: AgentState, *, agent_id: str) -> AgentState:
+    """把已注册 manifest 的 Agent ID 写入子图状态。"""
+
+    return {**state, "selected_agent_id": agent_id}
 
 
 def build_subgraph(gateway: ToolGateway) -> AgentSubgraph:
     from . import MANIFEST
 
     builder: StateGraph[AgentState, None, AgentState, AgentState] = StateGraph(AgentState)
-    builder.add_node("prepare_research", _prepare)
+    builder.add_node("prepare_research", lambda state: _prepare(state, agent_id=MANIFEST.agent_id))
     builder.add_edge(START, "prepare_research")
     builder.add_edge("prepare_research", END)
     return AgentSubgraph(MANIFEST, SYSTEM_PROMPT, builder.compile(), gateway)

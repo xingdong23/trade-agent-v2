@@ -24,7 +24,15 @@ class ResearchSafetyError(ValueError):
 
 
 class ResearchSafetyPolicy(Protocol):
-    """研究内容进入 artifact 前必须实现的结构化安全策略。"""
+    """研究内容进入 artifact 前必须实现的结构化安全策略。
+
+    Contract:
+        - 只依据结构化安全分类判定，不能解析用户展示文本控制流程。
+        - 发现收益承诺或成交声明时必须拒绝整个不安全主张。
+
+    Implemented by:
+        ``ResearchSafetyValidator`` 与测试中的显式安全策略 fake。
+    """
 
     policy_version: str
 
@@ -35,7 +43,7 @@ class ResearchSafetyPolicy(Protocol):
         """校验主题候选描述的结构化安全分类。"""
 
 
-class ResearchSafetyValidator:
+class ResearchSafetyValidator(ResearchSafetyPolicy):
     """默认版本化安全策略，只消费结构化标签而不解析展示文本。
 
     Notes:
@@ -65,7 +73,16 @@ class ResearchSafetyValidator:
 
 @dataclass(frozen=True, slots=True)
 class ConfidenceBand:
-    """把最大 gap 数量映射为研究置信度标签。"""
+    """把最大 gap 数量映射为研究置信度标签。
+
+    Attributes:
+        maximum_gap_count: 当前置信区间允许的最大 gap 数量；为 ``None`` 表示无上限。
+        label: 写入研究产物的稳定置信度标签。
+
+    Invariants:
+        - maximum_gap_count 不能为负。
+        - label 不能为空白字符串。
+    """
 
     maximum_gap_count: int | None
     label: str
@@ -87,6 +104,11 @@ class ResearchAssemblyPolicy:
         confidence_bands: 按 gap 数量升序匹配的置信度区间，最后一项必须无上限。
         missing_section_template: 包含 `{section}` 占位符的缺失章节文案。
         watchlist_proposal_only: 主题研究是否只能生成待审批建议。
+
+    Invariants:
+        - policy_version 不能为空，且 missing_section_template 必须包含 ``{section}`` 占位符。
+        - required_sections 不能重复。
+        - confidence_bands 必须按 gap 数量升序排列，且最后一项必须覆盖无上限场景。
     """
 
     policy_version: str
@@ -121,6 +143,20 @@ class ResearchAssemblyPolicy:
 
 @dataclass(frozen=True, slots=True)
 class SecurityResearchDraft:
+    """组装证券研究 artifact 前的结构化草稿。
+
+    Attributes:
+        artifact_id: 待生成研究产物的稳定标识。
+        owner_id: 研究草稿所属用户。
+        security: 被研究的规范证券。
+        claims_by_section: 按章节组织、尚未组装为 artifact 的研究主张集合。
+        gaps: 调研阶段已知的数据缺口或待补充说明。
+
+    Invariants:
+        - claims_by_section 的键必须使用稳定章节枚举。
+        - gaps 仅表达信息缺口，不替代结构化安全分类。
+    """
+
     artifact_id: str
     owner_id: str
     security: SecurityId

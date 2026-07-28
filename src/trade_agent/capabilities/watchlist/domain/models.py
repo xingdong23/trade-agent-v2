@@ -26,6 +26,19 @@ class Watchlist:
 
 
 class ImportStatus(StrEnum):
+    """Watchlist 导入单行解析状态的稳定枚举。
+
+    Attributes:
+        ACCEPTED: 当前行已成功解析为唯一受支持证券。
+        AMBIGUOUS: 当前行匹配到多个候选，需要人工澄清。
+        DUPLICATE: 当前行对应的证券已在目标 watchlist 中存在。
+        UNSUPPORTED_MARKET: 当前行解析到的证券不属于受支持市场。
+        REJECTED: 当前行无法形成可接受的导入结果。
+
+    Invariants:
+        - 枚举值驱动导入审批、前端高亮与后续写入策略。
+    """
+
     ACCEPTED = "accepted"
     AMBIGUOUS = "ambiguous"
     DUPLICATE = "duplicate"

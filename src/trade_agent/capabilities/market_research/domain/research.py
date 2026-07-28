@@ -8,6 +8,21 @@ from .models import Evidence, SecurityId
 
 
 class ResearchSectionKind(StrEnum):
+    """证券研究章节类型的稳定枚举。
+
+    Attributes:
+        PRICE_VOLUME: 价格、成交量与市场行为概览。
+        TECHNICAL_LEVELS: 关键技术位、形态与触发区间。
+        FUNDAMENTALS: 基本面、财务与经营质量信息。
+        CATALYSTS: 可能改变预期的事件、催化剂或驱动因素。
+        RISKS: 主要风险、反例与不确定性。
+        ASSUMPTIONS: 当前研究依赖的显式前提条件。
+        INVALIDATION: 使研究结论失效的观察条件。
+
+    Invariants:
+        - 枚举值用于 artifact 序列化与章节校验，属于稳定协议字段。
+    """
+
     PRICE_VOLUME = "price_volume"
     TECHNICAL_LEVELS = "technical_levels"
     FUNDAMENTALS = "fundamentals"
@@ -18,7 +33,17 @@ class ResearchSectionKind(StrEnum):
 
 
 class ResearchSafetyClass(StrEnum):
-    """供本地安全策略判断研究主张性质的结构化标签。"""
+    """供本地安全策略判断研究主张性质的结构化标签。
+
+    Attributes:
+        ANALYSIS: 普通研究分析，不包含保证收益或执行承诺。
+        RETURN_GUARANTEE: 带有保本、稳赚等收益保证语义。
+        EXECUTION_CLAIM: 暗示系统会自动下单、执行或代替用户决策。
+
+    Invariants:
+        - 枚举值只表达安全分类，不承载展示文案。
+        - 安全策略必须基于这些稳定标签判定，而不是解析自然语言文本。
+    """
 
     ANALYSIS = "analysis"
     RETURN_GUARANTEE = "return_guarantee"
@@ -34,6 +59,10 @@ class ResearchClaim:
         evidence_ids: 支撑该主张的 evidence 标识集合。
         confidence: 该主张当前的置信度分级。
         safety_class: 主张的结构化安全分类，不从展示文本推断。
+
+    Invariants:
+        - 每条主张都必须能回溯到 ``evidence_ids`` 指向的证据快照。
+        - safety_class 是唯一可信的安全分类来源。
     """
 
     text: str
@@ -50,6 +79,10 @@ class ResearchSection:
         kind: 章节主题，例如技术位、风险或催化因素。
         claims: 当前章节下的全部研究主张。
         gaps: 当前章节仍缺失或不可得的信息提示。
+
+    Invariants:
+        - kind 必须使用稳定章节枚举。
+        - claims 与 gaps 共同表达该章节当前已知与未知的信息边界。
     """
 
     kind: ResearchSectionKind
@@ -71,6 +104,10 @@ class SecurityResearchArtifact:
         gaps: 对整份研究仍然成立的数据缺口。
         confidence: 对整体研究结论的置信度分级。
         assembly_policy_version: 生成章节缺口与置信度所用的策略版本。
+
+    Invariants:
+        - sections 中的主张必须能够被 evidence 中的快照引用校验。
+        - assembly_policy_version 必须精确标识生成该 artifact 的装配策略。
     """
 
     artifact_id: str
@@ -95,6 +132,10 @@ class ThemeCandidate:
         moat_hypothesis: 对竞争优势或位置的简要假设。
         risks: 当前候选项需要额外关注的主要风险。
         safety_classes: 候选描述涉及的结构化安全分类。
+
+    Invariants:
+        - evidence_ids 必须指向同一份主题研究使用的证据集合。
+        - safety_classes 只承载结构化安全标签，不替代风险说明文本。
     """
 
     role: str
@@ -119,6 +160,10 @@ class ThemeResearchArtifact:
         gaps: 当前主题研究仍然存在的信息缺口。
         watchlist_proposal_only: 是否仅允许提出 watchlist 建议而不直接写入。
         assembly_policy_version: 生成该产物所用的研究策略版本。
+
+    Invariants:
+        - candidates 中每个候选都必须可追溯到 evidence 中的快照。
+        - watchlist_proposal_only 为真时，该 artifact 只能输出待审批建议。
     """
 
     artifact_id: str

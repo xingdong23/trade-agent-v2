@@ -80,6 +80,6 @@ Side Effects:
 - 解释“为什么这样设计”和“不这样做会破坏什么”，不逐行翻译代码。
 - 自然语言分类、提示词和用户文案不得散落在 `if/elif` 中，应通过可替换协议或配置注入。
 - 控制流不得解析异常消息或展示文案；错误分支必须依赖类型化异常和稳定错误码。
-- 通用 runtime 不得枚举业务 journey 或 HITL `subject_type`；这些契约由 Journey 插件注册。
+- 通用 runtime 不得枚举业务 workflow 或 HITL `subject_type`；这些契约由 Workflow 插件注册。
 - 稳定协议 ID、Card kind、领域状态枚举不是“硬编码业务判断”，它们属于版本化契约。
 - 中文标点已列入 Ruff `allowed-confusables`，仅用于注释和字符串；Python 标识符仍使用 ASCII。

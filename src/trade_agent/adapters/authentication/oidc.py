@@ -22,6 +22,10 @@ class OidcProviderMetadata:
         issuer: provider 宣告的标准 issuer。
         jwks_uri: 用于下载签名公钥集合的端点。
         signing_algorithms: provider 允许的 token 签名算法列表。
+
+    Invariants:
+        - issuer 与 jwks_uri 必须来自同一份已验证的 discovery 文档。
+        - signing_algorithms 只包含 provider 显式声明的可用签名算法。
     """
 
     issuer: str
@@ -31,7 +35,15 @@ class OidcProviderMetadata:
 
 @dataclass(frozen=True, slots=True)
 class OidcRoleClaim:
-    """描述一个角色 claim 的嵌套路径和字符串分隔规则。"""
+    """描述一个角色 claim 的嵌套路径和字符串分隔规则。
+
+    Attributes:
+        path: 支持点号嵌套的 claim 路径。
+        separator: 当 claim 为字符串时用于切分多个角色的分隔符；为 ``None`` 时只接受数组值。
+
+    Invariants:
+        - path 不能为空白字符串。
+    """
 
     path: str
     separator: str | None = None
@@ -48,6 +60,10 @@ class OidcClaimMapping:
     Attributes:
         subject_claim: 支持点号嵌套的 subject claim 路径。
         role_claims: 可合并多个数组或分隔字符串 claim 的提取规则。
+
+    Invariants:
+        - subject_claim 不能为空白字符串。
+        - role_claims 的顺序决定角色合并时的读取顺序，但不会影响最终去重结果。
     """
 
     subject_claim: str

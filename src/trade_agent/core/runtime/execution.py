@@ -12,6 +12,21 @@ from trade_agent.core.llm.contracts import JsonValue
 
 
 class NodeErrorCode(StrEnum):
+    """节点执行层共享的稳定错误码。
+
+    Attributes:
+        TIMEOUT: 节点或底层 provider 调用超时。
+        PROVIDER_RATE_LIMITED: provider 因限流拒绝请求。
+        PROVIDER_UNAVAILABLE: provider 暂不可用或服务故障。
+        PROVIDER_UNAUTHORIZED: provider 认证、授权或凭据校验失败。
+        INVALID_RESPONSE: provider 返回结构或语义无效。
+        RETRY_EXHAUSTED: 在重试预算内仍未成功完成。
+        INTERNAL: 未注册或不可归类的内部错误。
+
+    Invariants:
+        - 枚举值是调度层决定重试、降级与用户提示的稳定协议字段。
+    """
+
     TIMEOUT = "timeout"
     PROVIDER_RATE_LIMITED = "provider_rate_limited"
     PROVIDER_UNAVAILABLE = "provider_unavailable"
@@ -113,31 +128,24 @@ class CommandStore(Protocol):
         ...
 
 
-class CommandReceipt(Protocol):
-    """命令存储向执行器暴露的最小结果视图。
+@dataclass(frozen=True, slots=True)
+class CommandReceipt:
+    """幂等命令存储返回给执行层的不可变快照。
 
-    Contract:
-        - 属性读取必须无副作用。
-        - ``reused`` 为真时，``result`` 应表示已存在命令的已知结果或空值。
+    Attributes:
+        command_id: 命令的稳定标识。
+        status: 当前持久化状态，例如 pending 或 completed。
+        result: 已持久化结果；命令未完成时为空。
+        reused: 本次操作是否复用了既有命令记录。
 
-    Implemented by:
-        trade_agent.adapters.sqlite.repositories.CommandReceipt
+    Invariants:
+        - ``reused`` 为真时，本对象描述既有记录而不是新建命令。
     """
 
-    @property
-    def command_id(self) -> str:
-        """返回命令的稳定标识。"""
-        ...
-
-    @property
-    def result(self) -> Mapping[str, JsonValue] | None:
-        """返回已持久化结果；命令未完成时可以为空。"""
-        ...
-
-    @property
-    def reused(self) -> bool:
-        """指示本次 receipt 是否复用了既有幂等记录。"""
-        ...
+    command_id: str
+    status: str
+    result: Mapping[str, JsonValue] | None
+    reused: bool
 
 
 class NodeExecutor:

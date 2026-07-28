@@ -8,13 +8,32 @@ from enum import StrEnum
 
 
 class PredictionTarget(StrEnum):
+    """量化预测目标的稳定枚举。
+
+    Attributes:
+        RETURN: 预测未来收益或回报幅度。
+        DIRECTION: 预测未来方向，例如涨跌或正负类。
+        VOLATILITY: 预测未来波动率或风险水平。
+
+    Invariants:
+        - 枚举值用于任务定义、模型 lineage 与推理协议，属于稳定字段。
+    """
+
     RETURN = "return"
     DIRECTION = "direction"
     VOLATILITY = "volatility"
 
 
 class SupervisedTaskType(StrEnum):
-    """声明专用模型训练任务的统计类型。"""
+    """声明专用模型训练任务的统计类型。
+
+    Attributes:
+        BINARY_CLASSIFICATION: 二分类任务，标签空间固定为两个离散值。
+        REGRESSION: 回归任务，标签位于连续数值区间。
+
+    Invariants:
+        - 枚举值决定标签 schema 与评测方式，属于稳定训练协议字段。
+    """
 
     BINARY_CLASSIFICATION = "binary_classification"
     REGRESSION = "regression"
@@ -140,6 +159,17 @@ class ModelArtifactLineage:
 
 
 class AdjustmentPolicy(StrEnum):
+    """量化数据公司行动处理策略的稳定枚举。
+
+    Attributes:
+        RAW: 使用未复权原始价格与成交量。
+        SPLIT_ADJUSTED: 仅做拆股等股本变动复权。
+        TOTAL_RETURN: 同时考虑拆股与分红的总回报复权。
+
+    Invariants:
+        - 枚举值用于特征 lineage 与数据快照声明，属于稳定协议字段。
+    """
+
     RAW = "raw"
     SPLIT_ADJUSTED = "split_adjusted"
     TOTAL_RETURN = "total_return"

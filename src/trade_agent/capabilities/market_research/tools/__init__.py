@@ -5,11 +5,21 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from trade_agent.core.llm.contracts import JsonValue
-from trade_agent.core.tools import ToolManifest, ToolRequest, ToolResult
+from trade_agent.core.tools import ToolManifest, ToolProtocol, ToolRequest, ToolResult
 from trade_agent.core.tools.identity import bind_trusted_identity, identity_fields_for_manifest
 
 
 class MarketResearchToolApplication(Protocol):
+    """研究 Tool 调用的应用层门面协议。
+
+    Contract:
+        - 所有结果必须是通过 capability 校验的结构化 JSON，Tool 不补业务字段。
+        - 实现方负责 owner 隔离、provider 调用和 evidence 来源校验。
+
+    Implemented by:
+        组合根注册的市场研究应用门面与 ``FakeResearchApplication`` 测试实现。
+    """
+
     async def resolve_security(
         self, arguments: Mapping[str, JsonValue]
     ) -> Mapping[str, JsonValue]: ...
@@ -27,7 +37,16 @@ _OUTPUT: dict[str, JsonValue] = {"type": "object", "additionalProperties": True}
 
 
 @dataclass(frozen=True, slots=True)
-class ResolveSecurityTool:
+class ResolveSecurityTool(ToolProtocol):
+    """证券解析 Tool 的只读适配器。
+
+    Attributes:
+        application: 注入的研究应用服务，用于执行证券解析用例。
+
+    Invariants:
+        - Tool 自身不承载业务规则，只做身份绑定、参数校验和委托调用。
+    """
+
     application: MarketResearchToolApplication
 
     manifest = ToolManifest(
@@ -61,7 +80,16 @@ class ResolveSecurityTool:
 
 
 @dataclass(frozen=True, slots=True)
-class ResearchSecurityTool:
+class ResearchSecurityTool(ToolProtocol):
+    """证券研究 Tool 的只读适配器。
+
+    Attributes:
+        application: 注入的研究应用服务，用于执行单证券研究用例。
+
+    Invariants:
+        - Tool 自身不承载业务规则，只做身份绑定、参数校验和委托调用。
+    """
+
     application: MarketResearchToolApplication
 
     manifest = ToolManifest(
@@ -95,7 +123,16 @@ class ResearchSecurityTool:
 
 
 @dataclass(frozen=True, slots=True)
-class ResearchThemeTool:
+class ResearchThemeTool(ToolProtocol):
+    """主题研究 Tool 的只读适配器。
+
+    Attributes:
+        application: 注入的研究应用服务，用于执行主题研究用例。
+
+    Invariants:
+        - Tool 自身不承载业务规则，只做身份绑定、参数校验和委托调用。
+    """
+
     application: MarketResearchToolApplication
 
     manifest = ToolManifest(

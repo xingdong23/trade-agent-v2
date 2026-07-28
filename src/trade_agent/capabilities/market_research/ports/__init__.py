@@ -20,7 +20,15 @@ from .providers import (
 
 
 class MarketResearchRepository(CapabilityRepository, Protocol):
-    """市场研究版本仓储 port。"""
+    """市场研究版本仓储 port。
+
+    Contract:
+        - 保存时必须原子校验 owner 与期望版本。
+        - 查询不得暴露其他 owner 的聚合是否存在。
+
+    Implemented by:
+        ``SQLiteAggregateRepository`` 与 ``InMemoryAggregateRepository``。
+    """
 
 
 __all__ = [

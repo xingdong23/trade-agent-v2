@@ -20,6 +20,7 @@ from litellm.exceptions import (
 
 from trade_agent.core.llm import (
     JsonValue,
+    LLMClient,
     LLMError,
     LLMErrorCode,
     LLMRequest,
@@ -91,7 +92,7 @@ class LiteLLMCompletion(Protocol):
         ...
 
 
-class LiteLLMClient:
+class LiteLLMClient(LLMClient):
     def __init__(
         self,
         routes: Mapping[str, LiteLLMRouteConfig],

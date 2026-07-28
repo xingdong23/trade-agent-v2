@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from threading import Lock
 
+from trade_agent.capabilities.contracts import CapabilityApplication
 from trade_agent.capabilities.planning.contracts import (
     CapabilityCommand,
     CapabilityQuery,
@@ -35,7 +36,7 @@ class PlanningConflictError(RuntimeError):
 class PlanDraftRequest:
     """创建或修订计划草稿时的标准输入。
 
-    这个对象把来自表单、Research journey 或 Tool 调用的输入统一成一种形状，
+    这个对象把来自表单、Research workflow 或 Tool 调用的输入统一成一种形状，
     避免 application service 直接依赖某个入口层的参数命名。
 
     Attributes:
@@ -82,7 +83,7 @@ class ReviewResult:
     reviewed_plan: TradingPlan | None = None
 
 
-class PlanningApplication:
+class PlanningApplication(CapabilityApplication):
     """保留统一 capability command/query 边界, 由具体入口使用类型化 service。"""
 
     async def execute(self, command: CapabilityCommand) -> CapabilityResult:

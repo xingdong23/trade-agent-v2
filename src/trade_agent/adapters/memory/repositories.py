@@ -2,11 +2,29 @@
 
 from collections.abc import Mapping
 
-from trade_agent.capabilities.contracts import CapabilityResult, ConcurrentWriteError
+from trade_agent.capabilities.contracts import (
+    CapabilityRepository,
+    CapabilityResult,
+    ConcurrentWriteError,
+)
+from trade_agent.capabilities.market_research.ports import MarketResearchRepository
+from trade_agent.capabilities.planning.ports import PlanningRepository
+from trade_agent.capabilities.quantitative.ports import QuantitativeRepository
+from trade_agent.capabilities.strategy.ports import StrategyRepository
+from trade_agent.capabilities.watchlist.ports import WatchlistRepository
 from trade_agent.core.llm.contracts import JsonValue
 
 
-class InMemoryAggregateRepository:
+class InMemoryAggregateRepository(
+    MarketResearchRepository,
+    PlanningRepository,
+    QuantitativeRepository,
+    StrategyRepository,
+    WatchlistRepository,
+    CapabilityRepository,
+):
+    """所有标准 capability 聚合共享的确定性内存 repository fake。"""
+
     def __init__(self) -> None:
         self._records: dict[tuple[str, str], list[CapabilityResult]] = {}
 

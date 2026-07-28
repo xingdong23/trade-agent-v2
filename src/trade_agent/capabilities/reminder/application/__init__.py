@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 
+from trade_agent.capabilities.contracts import CapabilityApplication
 from trade_agent.capabilities.reminder.contracts import (
     CapabilityCommand,
     CapabilityQuery,
@@ -27,7 +28,7 @@ from trade_agent.capabilities.reminder.ports import (
 from trade_agent.core.llm.contracts import JsonValue
 
 
-class ReminderApplication:
+class ReminderApplication(CapabilityApplication):
     def __init__(self, repository: ReminderRepository, *, execution_disclaimer: str) -> None:
         if not execution_disclaimer.strip():
             raise ValueError("reminder execution_disclaimer 不能为空")

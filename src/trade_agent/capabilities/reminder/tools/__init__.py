@@ -9,11 +9,21 @@ from trade_agent.capabilities.reminder.contracts import (
     CapabilityResult,
 )
 from trade_agent.core.llm.contracts import JsonValue
-from trade_agent.core.tools import ToolManifest, ToolRequest, ToolResult
+from trade_agent.core.tools import ToolManifest, ToolProtocol, ToolRequest, ToolResult
 from trade_agent.core.tools.identity import bind_trusted_identity, identity_fields_for_manifest
 
 
 class ReminderToolApplication(Protocol):
+    """提醒 Tool 调用的统一 command/query 应用协议。
+
+    Contract:
+        - 写命令必须执行幂等、审批与状态机校验。
+        - 查询必须按 owner 隔离，Tool 不得直接访问 repository。
+
+    Implemented by:
+        ``ReminderApplication`` 与测试中的显式 reminder application fake。
+    """
+
     async def execute(self, command: CapabilityCommand) -> CapabilityResult: ...
 
     async def query(self, query: CapabilityQuery) -> CapabilityResult: ...
@@ -54,7 +64,16 @@ _REMINDER_OUTPUT_SCHEMA: dict[str, JsonValue] = {
 
 
 @dataclass(frozen=True, slots=True)
-class CreateReminderTool:
+class CreateReminderTool(ToolProtocol):
+    """创建提醒草稿的 Tool 适配器。
+
+    Attributes:
+        application: 注入的 reminder 应用协议实现，负责执行创建用例。
+
+    Invariants:
+        - Tool 自身不承载提醒规则，只做身份绑定、参数校验和委托调用。
+    """
+
     application: ReminderToolApplication
 
     manifest = ToolManifest(
@@ -105,7 +124,16 @@ class CreateReminderTool:
 
 
 @dataclass(frozen=True, slots=True)
-class SetReminderStatusTool:
+class SetReminderStatusTool(ToolProtocol):
+    """启用或停用提醒的 Tool 适配器。
+
+    Attributes:
+        application: 注入的 reminder 应用协议实现，负责执行状态迁移用例。
+
+    Invariants:
+        - Tool 自身不承载提醒规则，只做身份绑定、审批上下文校验和委托调用。
+    """
+
     application: ReminderToolApplication
 
     manifest = ToolManifest(
@@ -156,7 +184,16 @@ class SetReminderStatusTool:
 
 
 @dataclass(frozen=True, slots=True)
-class GetReminderTool:
+class GetReminderTool(ToolProtocol):
+    """读取提醒规则的只读 Tool 适配器。
+
+    Attributes:
+        application: 注入的 reminder 应用协议实现，负责执行查询用例。
+
+    Invariants:
+        - Tool 自身不承载提醒规则，只做身份绑定、参数校验和委托调用。
+    """
+
     application: ReminderToolApplication
 
     manifest = ToolManifest(

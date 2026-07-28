@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 from trade_agent.capabilities.planning.application import PlanningService
 from trade_agent.core.llm.contracts import JsonValue
-from trade_agent.core.tools import ToolManifest, ToolRequest, ToolResult
+from trade_agent.core.tools import ToolManifest, ToolProtocol, ToolRequest, ToolResult
 from trade_agent.core.tools.identity import bind_trusted_identity, identity_fields_for_manifest
 
 _OBJECT_OUTPUT: dict[str, JsonValue] = {"type": "object", "additionalProperties": True}
@@ -38,8 +38,15 @@ _LINEAGE_SCHEMA: dict[str, JsonValue] = {
 
 
 @dataclass(frozen=True, slots=True)
-class CreatePlanDraftTool:
-    """暴露“创建或修订计划草稿”用例的 Tool。"""
+class CreatePlanDraftTool(ToolProtocol):
+    """暴露“创建或修订计划草稿”用例的 Tool。
+
+    Attributes:
+        application: 注入的 planning 应用服务，负责创建或修订计划草稿。
+
+    Invariants:
+        - Tool 自身不承载计划规则，只做身份绑定、幂等键提取和委托调用。
+    """
 
     application: PlanningService
 
@@ -97,8 +104,15 @@ class CreatePlanDraftTool:
 
 
 @dataclass(frozen=True, slots=True)
-class TransitionPlanTool:
-    """暴露受控计划状态迁移的 Tool。"""
+class TransitionPlanTool(ToolProtocol):
+    """暴露受控计划状态迁移的 Tool。
+
+    Attributes:
+        application: 注入的 planning 应用服务，负责执行计划状态迁移。
+
+    Invariants:
+        - Tool 自身不承载计划规则，只做身份绑定、审批上下文提取和委托调用。
+    """
 
     application: PlanningService
 
@@ -157,8 +171,15 @@ class TransitionPlanTool:
 
 
 @dataclass(frozen=True, slots=True)
-class RecordPlanningReviewTool:
-    """暴露人工复盘记录的 Tool。"""
+class RecordPlanningReviewTool(ToolProtocol):
+    """暴露人工复盘记录的 Tool。
+
+    Attributes:
+        application: 注入的 planning 应用服务，负责记录计划或扫描结果复盘。
+
+    Invariants:
+        - Tool 自身不承载复盘规则，只做身份绑定、审批上下文提取和委托调用。
+    """
 
     application: PlanningService
 

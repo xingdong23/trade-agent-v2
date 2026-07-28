@@ -13,23 +13,66 @@ from trade_agent.core.llm.contracts import JsonValue
 
 
 class ReminderRuleType(StrEnum):
+    """提醒规则类型的稳定枚举。
+
+    Attributes:
+        PRICE_THRESHOLD: 价格穿越阈值时触发提醒。
+        SCHEDULED_REVIEW: 到达预定时间点时触发复核提醒。
+        INVALIDATION: 失效条件由假变真时触发提醒。
+
+    Invariants:
+        - 枚举值决定条件校验与触发逻辑，属于稳定规则字段。
+    """
+
     PRICE_THRESHOLD = "price_threshold"
     SCHEDULED_REVIEW = "scheduled_review"
     INVALIDATION = "invalidation"
 
 
 class ReminderStatus(StrEnum):
+    """提醒规则生命周期状态的稳定枚举。
+
+    Attributes:
+        DRAFT: 草稿态，尚未启用。
+        ACTIVE: 已批准并处于可评估状态。
+        DISABLED: 已停用，不再继续评估。
+
+    Invariants:
+        - 枚举值驱动审批迁移与 worker 评估范围。
+    """
+
     DRAFT = "draft"
     ACTIVE = "active"
     DISABLED = "disabled"
 
 
 class ThresholdDirection(StrEnum):
+    """价格阈值提醒的稳定穿越方向枚举。
+
+    Attributes:
+        CROSSES_ABOVE: 从阈值下方向上穿越。
+        CROSSES_BELOW: 从阈值上方向下穿越。
+
+    Invariants:
+        - 枚举值只描述穿越方向，不承载价格或市场语义。
+    """
+
     CROSSES_ABOVE = "crosses_above"
     CROSSES_BELOW = "crosses_below"
 
 
 class DeliveryStatus(StrEnum):
+    """提醒投递状态的稳定枚举。
+
+    Attributes:
+        PENDING: 触发已创建，尚未完成投递。
+        DELIVERED: 已成功投递并保存回执。
+        FAILED: 在预算内投递失败。
+
+    Invariants:
+        - 枚举值驱动重试、审计与前端展示语义。
+    """
+
     PENDING = "pending"
     DELIVERED = "delivered"
     FAILED = "failed"

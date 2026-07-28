@@ -1,5 +1,6 @@
 """Watchlist capability 的导入、分类与 universe 冻结用例。"""
 
+from trade_agent.capabilities.contracts import CapabilityApplication
 from trade_agent.capabilities.watchlist.contracts import (
     CapabilityCommand,
     CapabilityQuery,
@@ -9,7 +10,7 @@ from trade_agent.capabilities.watchlist.contracts import (
 from .service import IdempotencyConflictError, WatchlistService
 
 
-class WatchlistApplication:
+class WatchlistApplication(CapabilityApplication):
     """Phase-one public application boundary."""
 
     async def execute(self, command: CapabilityCommand) -> CapabilityResult:

@@ -6,6 +6,17 @@ from enum import StrEnum
 
 
 class MonitoringAction(StrEnum):
+    """生产监控命中阈值后的稳定路由动作枚举。
+
+    Attributes:
+        CONTINUE: 继续使用当前生产模型版本。
+        FALLBACK_TO_BASELINE: 回退到已批准的基线模型版本。
+        STOP: 停止继续使用当前模型，等待人工处理。
+
+    Invariants:
+        - 枚举值直接驱动运行时路由决策，属于稳定控制流字段。
+    """
+
     CONTINUE = "continue"
     FALLBACK_TO_BASELINE = "fallback_to_approved_baseline"
     STOP = "stop"

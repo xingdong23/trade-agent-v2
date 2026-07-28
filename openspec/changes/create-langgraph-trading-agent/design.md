@@ -115,16 +115,18 @@ node 使用结构化输入输出 model 和显式 conditional edge。专用 subgr
 
 对话入口必须作为 Agent 中台而不是固定业务机器人实现。自然语言理解通过可替换的
 `IntentClassifier` 输出结构化 `IntentClassification`；具体业务流程通过完整的
-`ConversationJourney` 插件注册。一个 Journey 插件同时拥有稳定 `journey_id`、所需
-实体契约、启动处理器、可恢复的 HITL `subject_type` 和恢复处理器。通用会话运行时
-只负责分类、注册表查找、checkpoint、事件、Card 发布与失败关闭，不得导入具体
-capability service，不得判断“新增一个交易”“买”“研究”等自然语言短语，也不得
-通过 `if/elif` 枚举具体 journey 或 HITL subject。新增业务流程只能通过新增并注册
-Journey 插件完成，无须修改通用运行时。
+`ConversationWorkflow` 注册。一个 Workflow 同时声明稳定 `workflow_id`、负责它的
+Agent ID、所需实体契约、启动处理器、可恢复的 HITL `subject_type` 和恢复处理器。
+Supervisor Graph 必须消费分类结果、完成 Agent 路由和策略门禁，其返回的结构化路由
+结果是会话入口继续执行 Workflow 的唯一依据，禁止 Graph 调用完成后由外层再次独立
+决定业务流程。通用会话运行时只负责启动 run、调用 Graph、委托 Workflow 与失败关闭，
+不得导入具体 capability service，不得判断自然语言短语，也不得通过 `if/elif` 枚举
+具体 workflow 或 HITL subject。新增业务流程只能通过新增并注册 Workflow 完成，无须
+修改通用运行时。
 
 固定字符串并非一概禁止：版本稳定的协议 ID、Card kind、event type 和 schema 字段名
 是跨模块契约，必须集中定义、注册和校验；面向用户的业务话术、默认业务字段和领域
-对象拼装属于具体 Journey、capability presenter 或可配置文案，不得放进中台内核。
+对象拼装属于具体 Workflow、capability presenter 或可配置文案，不得放进中台内核。
 
 `Quantitative` 明确不是子智能体。它不需要 LLM 自主推理，而是 `capabilities/quantitative` 中由确定性代码、LightGBM/LSTM inference、model registry 和后台 worker 构成的业务能力。Research Agent 通过 `get_prediction`、`get_quantitative_snapshot` 等只读 tool 获取单股量化结果；Strategy Agent 通过 `submit_scan`、`get_scan_status` 和 `list_scan_results` tool 管理批量扫描。量化 training、model publish 和 drift handling 由 application/worker/HITL workflow 执行，不向普通对话 Agent 暴露自由调用入口。
 
@@ -264,9 +266,9 @@ LiteLLM 不承担业务 tool 的执行。模型返回的 tool call 或结构化�
 
 ### 14. 区分部署策略、业务目录与稳定协议常量
 
-全仓硬编码审计按三类处理。数据库路径、监听地址、checkpoint namespace、开发身份、OIDC claim/JWKS、LiteLLM endpoint、worker lease/retry、提醒渠道、Agent Tool allowlist、市场目录和可观测性端点属于部署策略，必须从唯一的 `AppSettings` 入口读取并由 composition root 显式注入。Planning 与 Research-to-plan 的操作目录、表单字段、Card 文案、复盘目标、lineage 类型和资源目录属于可替换业务配置；生产装配不得悄悄退回 Journey 或 presenter 内的第二套默认值。
+全仓硬编码审计按三类处理。数据库路径、监听地址、checkpoint namespace、开发身份、OIDC claim/JWKS、LiteLLM endpoint、worker lease/retry、提醒渠道、Agent Tool allowlist、市场目录和可观测性端点属于部署策略，必须从唯一的 `AppSettings` 入口读取并由 composition root 显式注入。Planning 与 Research-to-plan 的操作目录、表单字段、Card 文案、复盘目标、lineage 类型和资源目录属于可替换业务配置；生产装配不得悄悄退回 Workflow 或 presenter 内的第二套默认值。
 
-稳定的 Agent/Journey/Tool ID、Card kind、event type、schema version、领域状态机、量化评测协议和首版仅美股的产品边界属于版本化协议，不应为了“零字符串”而改成任意运行时输入。这些常量必须集中在 registry、catalog、enum 或明确的协议模块中，并通过未知值拒绝、版本校验和架构测试防止漂移。测试 fixture、fake provider 返回值和模板占位符验证样例不属于生产部署假设。
+稳定的 Agent/Workflow/Tool ID、Card kind、event type、schema version、领域状态机、量化评测协议和首版仅美股的产品边界属于版本化协议，不应为了“零字符串”而改成任意运行时输入。这些常量必须集中在 registry、catalog、enum 或明确的协议模块中，并通过未知值拒绝、版本校验和架构测试防止漂移。测试 fixture、fake provider 返回值和模板占位符验证样例不属于生产部署假设。
 
 Tool 执行身份由受信 `ToolExecutionContext` 注入，payload 中的 owner/actor 字段只能与受信主体一致，不能由 LLM 或客户端自报。Agent 的最终 Tool 白名单允许部署配置覆盖 manifest 预置目录，未知 Agent ID 启动失败。量化训练、推理、扫描任务、label schema 和 lineage 均要求显式版本或策略输入，不使用伪造的 model/strategy reference 补齐缺失来源。
 

@@ -1,6 +1,11 @@
-"""Public watchlist capability models."""
+"""Watchlist capability 对外公开的模型与协议。"""
 
-from trade_agent.capabilities.contracts import CapabilityCommand, CapabilityQuery, CapabilityResult
+from trade_agent.capabilities.contracts import (
+    CapabilityCardPresenter,
+    CapabilityCommand,
+    CapabilityQuery,
+    CapabilityResult,
+)
 from trade_agent.capabilities.watchlist.domain import (
     ClassificationSuggestion,
     ImportRow,
@@ -13,6 +18,7 @@ from trade_agent.capabilities.watchlist.domain import (
 )
 
 __all__ = [
+    "CapabilityCardPresenter",
     "CapabilityCommand",
     "CapabilityQuery",
     "CapabilityResult",

@@ -1,4 +1,4 @@
-"""Planning 会话旅程插件。"""
+"""Planning 会话工作流插件。"""
 
 from __future__ import annotations
 
@@ -8,11 +8,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal
 from uuid import uuid4
 
-from trade_agent.apps.journeys.contracts import (
-    ConversationJourney,
+from trade_agent.apps.workflows.contracts import (
     ConversationRunResult,
-    ConversationRuntimePort,
-    JourneyStartContext,
+    ConversationWorkflow,
+    WorkflowRuntime,
+    WorkflowStartContext,
 )
 from trade_agent.capabilities.planning.application import PlanDraftRequest, PlanningService
 from trade_agent.capabilities.planning.cards import (
@@ -24,7 +24,7 @@ from trade_agent.capabilities.planning.cards import (
     PlanningPresenterCopy,
 )
 from trade_agent.capabilities.planning.contracts import PlanLineage, TradingPlan
-from trade_agent.core.config import HitlSettings, MarketSettings, PlanningJourneySettings
+from trade_agent.core.config import HitlSettings, MarketSettings, PlanningWorkflowSettings
 from trade_agent.core.hitl import (
     DefaultHitlService,
     HumanInteraction,
@@ -33,10 +33,10 @@ from trade_agent.core.hitl import (
 )
 from trade_agent.core.llm.contracts import JsonValue
 from trade_agent.core.presentation import CardEnvelope
-from trade_agent.core.runtime import IntentClassification
+from trade_agent.core.runtime import Intent, IntentClassification
 
-JOURNEY_PLANNING_CHOOSE_OPERATION = "planning.choose_operation"
-JOURNEY_PLANNING_CREATE_PLAN = "planning.create_plan"
+WORKFLOW_PLANNING_CHOOSE_OPERATION = "planning.choose_operation"
+WORKFLOW_PLANNING_CREATE_PLAN = "planning.create_plan"
 
 _SUBJECT_PLANNING_CHOICE = "planning_choice"
 _SUBJECT_PLANNING_REQUEST = "planning_request"
@@ -80,8 +80,8 @@ class PlanningOperationSpec:
 
 
 @dataclass(frozen=True, slots=True)
-class PlanningJourneyConfig:
-    """描述 planning journey 当前暴露给平台的可配置入口。
+class PlanningWorkflowConfig:
+    """描述 planning workflow 当前暴露给平台的可配置入口。
 
     Attributes:
         choice_title: 入口 Choice Card 标题。
@@ -131,11 +131,11 @@ class PlanningJourneyConfig:
 
     def __post_init__(self) -> None:
         if not self.operations:
-            raise ValueError("planning journey 至少需要一个操作定义")
+            raise ValueError("planning workflow 至少需要一个操作定义")
         if not self.market_code.strip() or not self.exchange_codes:
-            raise ValueError("planning journey 必须配置市场代码与交易所目录")
+            raise ValueError("planning workflow 必须配置市场代码与交易所目录")
         if self.interaction_ttl_seconds < 60 or self.text_field_max_length < 1:
-            raise ValueError("planning journey 的 HITL 策略无效")
+            raise ValueError("planning workflow 的 HITL 策略无效")
         try:
             self.direct_plan_direction_template.format(symbol="SYMBOL")
         except KeyError as exc:
@@ -143,7 +143,7 @@ class PlanningJourneyConfig:
 
     @property
     def request_form_fields(self) -> tuple[PlanningFieldSpec, ...]:
-        """返回 Journey 请求表单需要投影的字段目录。"""
+        """返回 Workflow 请求表单需要投影的字段目录。"""
 
         return tuple(
             spec for spec in self.presenter_config.field_specs if spec.include_in_request_form
@@ -160,18 +160,18 @@ class PlanningJourneyConfig:
         )
 
 
-def default_planning_journey_config() -> PlanningJourneyConfig:
-    """从类型化应用默认值生成 planning journey 配置。"""
+def default_planning_workflow_config() -> PlanningWorkflowConfig:
+    """从类型化应用默认值生成 planning workflow 配置。"""
 
-    return planning_journey_config_from_settings(
-        PlanningJourneySettings(),
+    return planning_workflow_config_from_settings(
+        PlanningWorkflowSettings(),
         MarketSettings(),
         HitlSettings(),
     )
 
 
 def planning_presenter_config_from_settings(
-    settings: PlanningJourneySettings,
+    settings: PlanningWorkflowSettings,
 ) -> PlanningPresenterConfig:
     """把 Planning 部署配置转换为 capability presenter 运行时配置。"""
 
@@ -236,12 +236,12 @@ def planning_presenter_config_from_settings(
     )
 
 
-def planning_journey_config_from_settings(
-    settings: PlanningJourneySettings,
+def planning_workflow_config_from_settings(
+    settings: PlanningWorkflowSettings,
     market: MarketSettings,
     hitl: HitlSettings,
-) -> PlanningJourneyConfig:
-    """把部署配置转换为 Journey 只读运行配置。
+) -> PlanningWorkflowConfig:
+    """把部署配置转换为 Workflow 只读运行配置。
 
     Args:
         settings: Planning 入口、文案与操作目录。
@@ -249,10 +249,10 @@ def planning_journey_config_from_settings(
         hitl: 交互有效期与文本字段限制。
 
     Returns:
-        不依赖 Pydantic 的 Planning Journey 配置值对象。
+        不依赖 Pydantic 的 Planning Workflow 配置值对象。
     """
 
-    return PlanningJourneyConfig(
+    return PlanningWorkflowConfig(
         choice_title=settings.choice_title,
         choice_description=settings.choice_description,
         choice_text_fallback=settings.choice_text_fallback,
@@ -286,16 +286,16 @@ def planning_journey_config_from_settings(
     )
 
 
-class PlanningConversationJourney(ConversationJourney):
-    """负责交易计划入口、表单与审批闭环的会话旅程。
+class PlanningConversationWorkflow(ConversationWorkflow):
+    """负责交易计划入口、表单与审批闭环的会话工作流。
 
     Contract:
-        - 只管理“选择操作”和“直接创建计划”两类 planning 启动旅程。
+        - 只管理“选择操作”和“直接创建计划”两类 planning 启动工作流。
         - 所有表单值都必须通过 HITL schema 校验后，才能进入 ``PlanningService``。
-        - 该旅程只生成研究/决策用计划，不提供下单、账户或成交记录能力。
+        - 该工作流只生成研究/决策用计划，不提供下单、账户或成交记录能力。
 
     Implemented by:
-        ``apps/container.py`` 在组合根中装配的 planning journey。
+        ``apps/container.py`` 在组合根中装配的 planning workflow。
     """
 
     def __init__(
@@ -304,25 +304,31 @@ class PlanningConversationJourney(ConversationJourney):
         planning: PlanningService,
         hitl_service: DefaultHitlService,
         presenter: PlanningCardPresenter | None = None,
-        config: PlanningJourneyConfig | None = None,
+        config: PlanningWorkflowConfig | None = None,
     ) -> None:
         self._planning = planning
         self._hitl = hitl_service
-        self._config = config or default_planning_journey_config()
+        self._config = config or default_planning_workflow_config()
         self._presenter = presenter or PlanningCardPresenter(self._config.presenter_config)
 
     @property
-    def journey_ids(self) -> tuple[str, ...]:
-        """返回本旅程负责的启动 ID。"""
+    def agent_id(self) -> str:
+        """返回负责 Planning 工作流的 Agent ID。"""
+
+        return Intent.PLANNING.value
+
+    @property
+    def workflow_ids(self) -> tuple[str, ...]:
+        """返回本工作流负责的启动 ID。"""
 
         return (
-            JOURNEY_PLANNING_CHOOSE_OPERATION,
-            JOURNEY_PLANNING_CREATE_PLAN,
+            WORKFLOW_PLANNING_CHOOSE_OPERATION,
+            WORKFLOW_PLANNING_CREATE_PLAN,
         )
 
     @property
     def subject_types(self) -> tuple[str, ...]:
-        """返回本旅程负责恢复的 subject type。"""
+        """返回本工作流负责恢复的 subject type。"""
 
         return (
             _SUBJECT_PLANNING_CHOICE,
@@ -333,23 +339,23 @@ class PlanningConversationJourney(ConversationJourney):
 
     def start(
         self,
-        context: JourneyStartContext,
-        runtime: ConversationRuntimePort,
+        context: WorkflowStartContext,
+        runtime: WorkflowRuntime,
     ) -> ConversationRunResult:
-        """根据 journey_id 启动对应的 planning 流程。"""
+        """根据 workflow_id 启动对应的 planning 流程。"""
 
-        if context.classification.journey_id == JOURNEY_PLANNING_CHOOSE_OPERATION:
+        if context.classification.workflow_id == WORKFLOW_PLANNING_CHOOSE_OPERATION:
             return self._start_choice(context, runtime)
-        if context.classification.journey_id == JOURNEY_PLANNING_CREATE_PLAN:
+        if context.classification.workflow_id == WORKFLOW_PLANNING_CREATE_PLAN:
             return self._start_create_plan(context, runtime)
-        raise ValueError(f"planning journey 不支持 {context.classification.journey_id}")
+        raise ValueError(f"planning workflow 不支持 {context.classification.workflow_id}")
 
     def resume(
         self,
         interaction: HumanInteraction,
-        runtime: ConversationRuntimePort,
+        runtime: WorkflowRuntime,
     ) -> CardEnvelope | None:
-        """从 planning 旅程的暂停点恢复执行。"""
+        """从 planning 工作流的暂停点恢复执行。"""
 
         if interaction.subject_type == _SUBJECT_PLANNING_CHOICE:
             runtime.publish_interaction(interaction, "card.resolved")
@@ -363,8 +369,8 @@ class PlanningConversationJourney(ConversationJourney):
 
     def _start_choice(
         self,
-        context: JourneyStartContext,
-        runtime: ConversationRuntimePort,
+        context: WorkflowStartContext,
+        runtime: WorkflowRuntime,
     ) -> ConversationRunResult:
         interaction = self._create_choice(context.owner_id, context.thread_id, context.run_id)
         card = runtime.publish_interaction(interaction, "card.created")
@@ -378,8 +384,8 @@ class PlanningConversationJourney(ConversationJourney):
 
     def _start_create_plan(
         self,
-        context: JourneyStartContext,
-        runtime: ConversationRuntimePort,
+        context: WorkflowStartContext,
+        runtime: WorkflowRuntime,
     ) -> ConversationRunResult:
         symbol, exchange, identifier_locked = _classified_identifier(context.classification)
         notice = runtime.create_unsupported_notice(
@@ -421,7 +427,7 @@ class PlanningConversationJourney(ConversationJourney):
     def _handle_choice(
         self,
         interaction: HumanInteraction,
-        runtime: ConversationRuntimePort,
+        runtime: WorkflowRuntime,
     ) -> CardEnvelope:
         response = interaction.response or {}
         operation = self._operation_spec(str(response.get("choice", "")))
@@ -456,7 +462,7 @@ class PlanningConversationJourney(ConversationJourney):
     def _handle_form(
         self,
         interaction: HumanInteraction,
-        runtime: ConversationRuntimePort,
+        runtime: WorkflowRuntime,
     ) -> CardEnvelope:
         values = interaction.response or {}
         if interaction.subject_type == _SUBJECT_PLANNING_REQUEST:
@@ -498,7 +504,7 @@ class PlanningConversationJourney(ConversationJourney):
     def _handle_approval(
         self,
         interaction: HumanInteraction,
-        runtime: ConversationRuntimePort,
+        runtime: WorkflowRuntime,
     ) -> CardEnvelope:
         current = self._planning.get_plan(
             owner_id=interaction.owner_id,
@@ -924,10 +930,10 @@ def _payload_hash(payload: Mapping[str, JsonValue]) -> str:
 
 
 __all__ = [
-    "PlanningConversationJourney",
-    "PlanningJourneyConfig",
+    "PlanningConversationWorkflow",
     "PlanningOperationSpec",
-    "default_planning_journey_config",
-    "planning_journey_config_from_settings",
+    "PlanningWorkflowConfig",
+    "default_planning_workflow_config",
     "planning_presenter_config_from_settings",
+    "planning_workflow_config_from_settings",
 ]

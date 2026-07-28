@@ -66,6 +66,20 @@ class DatasetSnapshot:
 
 
 class QualityViolationCode(StrEnum):
+    """数据集质量门禁使用的稳定违规代码。
+
+    Attributes:
+        FUTURE_DATA: 字段在决策时点之后才可获得，存在前视偏差。
+        DUPLICATE_SAMPLE: 同一证券与决策时点出现重复样本。
+        INVALID_VALUE: 样本包含 NaN、无穷值或其他非法数值。
+        ADJUSTMENT_MISMATCH: 样本复权版本与期望版本不一致。
+        TIME_OVERLAP: 训练、验证、测试时间窗口重叠或顺序错误。
+        SURVIVORSHIP_BIAS_RISK: 缺少历史成分信息，存在幸存者偏差风险。
+
+    Invariants:
+        - 枚举值是质量报告与阻断逻辑共享的稳定违规字段。
+    """
+
     FUTURE_DATA = "future_data"
     DUPLICATE_SAMPLE = "duplicate_sample"
     INVALID_VALUE = "invalid_value"

@@ -1,6 +1,11 @@
-"""Public market research capability models."""
+"""市场研究 capability 对外公开的模型与协议。"""
 
-from trade_agent.capabilities.contracts import CapabilityCommand, CapabilityQuery, CapabilityResult
+from trade_agent.capabilities.contracts import (
+    CapabilityCardPresenter,
+    CapabilityCommand,
+    CapabilityQuery,
+    CapabilityResult,
+)
 from trade_agent.capabilities.market_research.domain import (
     Evidence,
     Market,
@@ -19,6 +24,7 @@ from trade_agent.capabilities.market_research.domain.research import (
 )
 
 __all__ = [
+    "CapabilityCardPresenter",
     "CapabilityCommand",
     "CapabilityQuery",
     "CapabilityResult",

@@ -2,12 +2,12 @@
 
 from collections.abc import AsyncIterator
 
-from trade_agent.core.llm import LLMRequest, LLMResponse
-from trade_agent.core.runtime import Intent, IntentClassification
-from trade_agent.core.tools import ToolRequest, ToolResult
+from trade_agent.core.llm import LLMClient, LLMRequest, LLMResponse
+from trade_agent.core.runtime import Intent, IntentClassification, IntentClassifier
+from trade_agent.core.tools import ToolGateway, ToolRequest, ToolResult
 
 
-class FakeLLMClient:
+class FakeLLMClient(LLMClient):
     def __init__(self, responses: list[LLMResponse] | None = None) -> None:
         self._responses = list(responses or [LLMResponse(content="scaffold")])
         self.requests: list[LLMRequest] = []
@@ -23,12 +23,12 @@ class FakeLLMClient:
         yield response.content
 
 
-class FakeToolGateway:
+class FakeToolGateway(ToolGateway):
     async def invoke(self, request: ToolRequest) -> ToolResult:
         return ToolResult(status="scaffold", payload={"tool_id": request.tool_id})
 
 
-class MappingIntentClassifier:
+class MappingIntentClassifier(IntentClassifier):
     """用测试数据声明的精确消息映射模拟意图分类。
 
     Attributes:
@@ -37,7 +37,7 @@ class MappingIntentClassifier:
 
     Invariants:
         - 该 fake 不做关键词包含判断，避免测试复制生产中的自然语言解析逻辑。
-        - 未声明消息默认进入 clarification，不会猜测业务旅程。
+        - 未声明消息默认进入 clarification，不会猜测业务工作流。
     """
 
     def __init__(

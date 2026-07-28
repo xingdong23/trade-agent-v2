@@ -8,9 +8,19 @@ from uuid import uuid4
 from sqlalchemy import Select, func, insert, select, update
 from sqlalchemy.exc import IntegrityError
 
-from trade_agent.capabilities.contracts import CapabilityResult, ConcurrentWriteError
+from trade_agent.capabilities.contracts import (
+    CapabilityRepository,
+    CapabilityResult,
+    ConcurrentWriteError,
+)
+from trade_agent.capabilities.market_research.ports import MarketResearchRepository
+from trade_agent.capabilities.planning.ports import PlanningRepository
+from trade_agent.capabilities.quantitative.ports import QuantitativeRepository
+from trade_agent.capabilities.strategy.ports import StrategyRepository
+from trade_agent.capabilities.watchlist.ports import WatchlistRepository
 from trade_agent.core.events import AuditEvent, RunEvent
 from trade_agent.core.llm.contracts import JsonValue
+from trade_agent.core.runtime.execution import CommandReceipt, CommandStore
 
 from .database import SQLiteDatabase
 from .json_support import dump_json, load_json
@@ -42,23 +52,6 @@ class JobLeaseError(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
-class CommandReceipt:
-    """SQLite 幂等命令记录返回给执行层的快照。
-
-    Attributes:
-        command_id: 命令稳定标识。
-        status: 当前命令状态，例如 pending 或 completed。
-        result: 已持久化结果；未完成时可为空。
-        reused: 本次是否命中了既有幂等记录。
-    """
-
-    command_id: str
-    status: str
-    result: Mapping[str, JsonValue] | None
-    reused: bool
-
-
-@dataclass(frozen=True, slots=True)
 class ClaimedJob:
     """从 SQLite 作业队列中成功 claim 到的任务。
 
@@ -77,7 +70,20 @@ class ClaimedJob:
     attempts: int
 
 
-class SQLiteAggregateRepository:
+class SQLiteAggregateRepository(
+    MarketResearchRepository,
+    PlanningRepository,
+    QuantitativeRepository,
+    StrategyRepository,
+    WatchlistRepository,
+    CapabilityRepository,
+):
+    """所有标准 capability 聚合共享的 SQLite 版本仓储。
+
+    显式列出各 marker port，使 IDE 可以从业务 repository 接口导航到该通用实现。
+    ``aggregate_type`` 仍由组合根注入，类本身不枚举业务资源。
+    """
+
     def __init__(self, database: SQLiteDatabase, aggregate_type: str) -> None:
         self._database = database
         self._aggregate_type = aggregate_type
@@ -148,7 +154,7 @@ class SQLiteAggregateRepository:
         )
 
 
-class SQLiteCommandStore:
+class SQLiteCommandStore(CommandStore):
     def __init__(self, database: SQLiteDatabase) -> None:
         self._database = database
 

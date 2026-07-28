@@ -9,6 +9,17 @@ from trade_agent.core.llm.contracts import JsonValue
 
 
 class ModelStatus(StrEnum):
+    """量化模型版本生命周期状态的稳定枚举。
+
+    Attributes:
+        CANDIDATE: 候选模型，尚未获得生产批准。
+        APPROVED: 已批准并可进入生产推理路径。
+        RETIRED: 已退役，不再作为生产候选使用。
+
+    Invariants:
+        - 枚举值是模型注册表、审批与运行时选择共享的稳定协议字段。
+    """
+
     CANDIDATE = "candidate"
     APPROVED = "approved"
     RETIRED = "retired"
@@ -226,6 +237,16 @@ class ModelRegistry:
 
 
 class PredictionStatus(StrEnum):
+    """量化预测可用性的稳定枚举。
+
+    Attributes:
+        AVAILABLE: 当前请求成功返回了可消费的预测结果。
+        UNAVAILABLE: 当前请求因门禁或依赖缺失未能返回预测。
+
+    Invariants:
+        - 枚举值驱动上层展示与降级逻辑，属于稳定输出字段。
+    """
+
     AVAILABLE = "available"
     UNAVAILABLE = "unavailable"
 

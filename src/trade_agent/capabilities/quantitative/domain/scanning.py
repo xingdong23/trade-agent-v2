@@ -14,6 +14,20 @@ from trade_agent.core.llm.contracts import JsonValue
 
 
 class ComparisonOperator(StrEnum):
+    """扫描硬规则使用的稳定比较运算符枚举。
+
+    Attributes:
+        GREATER_THAN: 实际值必须严格大于阈值。
+        GREATER_THAN_OR_EQUAL: 实际值必须大于或等于阈值。
+        LESS_THAN: 实际值必须严格小于阈值。
+        LESS_THAN_OR_EQUAL: 实际值必须小于或等于阈值。
+        EQUAL: 实际值必须与阈值相等。
+        NOT_EQUAL: 实际值必须与阈值不相等。
+
+    Invariants:
+        - 枚举值是硬规则持久化与解释层共享的稳定运算符语义。
+    """
+
     GREATER_THAN = "gt"
     GREATER_THAN_OR_EQUAL = "gte"
     LESS_THAN = "lt"
@@ -23,6 +37,17 @@ class ComparisonOperator(StrEnum):
 
 
 class ScanDisposition(StrEnum):
+    """扫描结果结论的稳定枚举。
+
+    Attributes:
+        MATCHED: 证券满足全部硬规则且通过量化筛选。
+        NON_MATCH: 证券被排除或未达到筛选门槛。
+        UNAVAILABLE: 因数据缺口、市场限制或模型不可用而无法评估。
+
+    Invariants:
+        - 枚举值决定结果展示、后续复核与计划生成入口。
+    """
+
     MATCHED = "matched"
     NON_MATCH = "non_match"
     UNAVAILABLE = "unavailable"

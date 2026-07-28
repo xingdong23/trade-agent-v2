@@ -14,7 +14,7 @@ from langgraph.types import interrupt
 from trade_agent.core.llm.contracts import JsonValue
 from trade_agent.core.tools import JsonSchemaValidator, SchemaValidationError
 
-from .contracts import HitlRepository, HumanInteraction, InteractionStatus
+from .contracts import HitlRepository, HitlService, HumanInteraction, InteractionStatus
 
 
 class ResponseValidationError(ValueError):
@@ -29,7 +29,7 @@ class ResponseValidationError(ValueError):
         self.field_errors = dict(field_errors or {})
 
 
-class DefaultHitlService:
+class DefaultHitlService(HitlService):
     """HITL 聚合的应用服务。
 
     它不关心请求来自 Web、CLI 还是 LangGraph resume；它只负责：

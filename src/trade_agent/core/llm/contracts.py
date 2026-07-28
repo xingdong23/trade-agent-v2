@@ -41,7 +41,23 @@ class ModelEndpoint:
 
 
 class LLMErrorCode(StrEnum):
-    """业务层可以稳定处理的模型调用错误类别。"""
+    """业务层可以稳定处理的模型调用错误类别。
+
+    Attributes:
+        TIMEOUT: 模型调用超时。
+        RATE_LIMITED: provider 因频率限制拒绝请求。
+        AUTHENTICATION: provider 认证或凭据校验失败。
+        INVALID_REQUEST: 请求参数、路由或 schema 不合法。
+        CONTEXT_LIMIT: 输入上下文超过模型允许上限。
+        CONTENT_POLICY: 输出或请求触发内容策略限制。
+        BUDGET_EXCEEDED: 当前逻辑路由预算已耗尽。
+        PROVIDER_NOT_ALLOWED: 请求命中了未获允许的 provider。
+        INVALID_RESPONSE: provider 返回了无法接受的结构或内容。
+        UNAVAILABLE: provider 暂不可用或服务异常。
+
+    Invariants:
+        - 枚举值是上层恢复策略与审计报表依赖的稳定错误码。
+    """
 
     TIMEOUT = "timeout"
     RATE_LIMITED = "rate_limited"

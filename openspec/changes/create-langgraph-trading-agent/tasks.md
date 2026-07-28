@@ -133,10 +133,10 @@
 - [x] 12.7 运行 `openspec validate`、完整非 live test suite 和 migration smoke test，记录验证证据及尚未覆盖的 live provider 风险
 - [x] 12.8 完成“新增一个交易”Choice Card 澄清与不支持路径，以及“我要买 NVDA”不能下单提示 -> 合并字段 Form Card -> 字段错误 -> Approval Card edit/supersede -> 幂等 confirm -> TradingPlan Artifact Card 的端到端测试，并覆盖刷新恢复、重复响应、键盘操作和移动端布局
 
-## 13. Agent 中台解耦与课程注释门禁
+## 13. Agent 中台解耦与注释门禁
 
-- [x] 13.1 将自然语言分类抽象为可替换 `IntentClassifier`，运行时只消费结构化 intent、journey ID 与实体，不包含固定业务短语判断
-- [x] 13.2 将启动、HITL subject 和恢复处理统一封装为可注册 `ConversationJourney` 插件，并把 Planning/Research-to-plan 业务编排移出通用会话运行时
+- [x] 13.1 将自然语言分类抽象为可替换 `IntentClassifier`，运行时只消费结构化 intent、workflow ID 与实体，不包含固定业务短语判断
+- [x] 13.2 将启动、HITL subject 和恢复处理统一封装为可注册 `ConversationWorkflow`，并把 Planning/Research-to-plan 业务编排移出通用会话运行时
 - [x] 13.3 使用类型化 Tool 执行异常替代异常消息关键词解析，确保中台控制流只依赖协议、枚举、类型和注册表
 - [x] 13.4 按中文 Docstring 规范补齐公共模型实体与 Protocol，并增加全仓 AST 架构门禁
 - [x] 13.5 运行格式化、lint、mypy、全量测试、硬编码扫描和 OpenSpec strict validation
@@ -146,7 +146,15 @@
 - [x] 14.1 将量化 task 类型、objective/metric、label schema、runtime 参数、评测协议和 model lineage 改为显式输入，删除伪造的 strategy/model 来源
 - [x] 14.2 将 OIDC claim/JWKS、worker registry/lease/retry、reminder delivery、research assembly/conflict policy 和 Agent Tool allowlist 收敛到类型化配置或可注入 registry
 - [x] 14.3 将 Planning 与 Research-to-plan 的操作目录、字段 schema、presenter 文案、审批 payload、提醒渠道、复盘目录和 lineage 策略接入唯一 `AppSettings` 配置源
-- [x] 14.4 强制 composition root 显式注入 checkpoint namespace、未注册 Journey 提示和共享 Planning presenter，禁止生产路径使用实现层兼容默认
+- [x] 14.4 强制 composition root 显式注入 checkpoint namespace、未注册 Workflow 提示和共享 Planning presenter，禁止生产路径使用实现层兼容默认
 - [x] 14.5 实现 owner 隔离的 conversation snapshot endpoint、动态 thread ID、统一 `VITE_API_BASE_URL` 和协议 family renderer，删除固定 thread 与猜测式恢复 URL
 - [x] 14.6 二次扫描固定证券、用户、租户、模型、策略、地址、自然语言控制流和伪造 lineage；仅保留集中管理的协议常量、产品边界与测试 fixture
 - [x] 14.7 运行 Python/Web 全量格式化、lint、mypy、测试、build、OpenSpec strict validation 和 migration smoke test，并记录 live provider 未覆盖风险
+
+## 15. Workflow 主流程与代码可导航性收敛
+
+- [x] 15.1 删除旧 Journey 术语和双轨编排，将稳定 `workflow_id`、Workflow 注册与 HITL 恢复路由统一接入 Supervisor Graph 的结构化路由结果
+- [x] 15.2 拆分 `ConversationRunService` 的注册、持久化、Card 投影和事件职责，使会话入口只负责启动、恢复和失败关闭
+- [x] 15.3 为核心 Protocol 的生产 Adapter 与测试 fake 增加显式继承，并增加架构测试保证 PyCharm 可从 Interface 导航到 Implementation
+- [x] 15.4 补齐全仓公共 dataclass、TypedDict、Pydantic model 与枚举的严格中文 Docstring，并将 AST 门禁扩展到整个源码树
+- [x] 15.5 更新全中文主流程文档，扫描运行时业务硬编码并完成 Python/Web/OpenSpec 全量验证

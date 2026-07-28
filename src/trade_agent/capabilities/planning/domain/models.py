@@ -14,6 +14,20 @@ from trade_agent.core.llm.contracts import JsonValue
 
 
 class PlanStatus(StrEnum):
+    """交易计划生命周期状态的稳定枚举。
+
+    Attributes:
+        DRAFT: 草稿态，可继续补充或修订风险关键字段。
+        ACTIVE: 已经通过审批并进入观察执行的激活态。
+        TRIGGERED: 计划触发，等待或进入后续人工复盘。
+        CANCELLED: 计划被人工取消，不再继续观察。
+        EXPIRED: 计划因时效失效而结束。
+        REVIEWED: 计划已完成复盘闭环。
+
+    Invariants:
+        - 枚举值是计划状态机、持久化与 API 返回共同依赖的稳定协议字段。
+    """
+
     DRAFT = "draft"
     ACTIVE = "active"
     TRIGGERED = "triggered"
@@ -23,6 +37,20 @@ class PlanStatus(StrEnum):
 
 
 class ReviewOutcome(StrEnum):
+    """人工复盘结论的稳定枚举。
+
+    Attributes:
+        USEFUL: 复盘认为该计划或扫描结果对决策有帮助。
+        FALSE_POSITIVE: 复盘认为存在误报，结论不应触发当前行动。
+        FALSE_NEGATIVE: 复盘认为遗漏了本应识别的机会或风险。
+        EXECUTED: 复盘记录该计划已被人工实际执行。
+        IGNORED: 复盘记录用户选择忽略该计划或结果。
+        OTHER: 其他无法归入既有分类的复盘结论。
+
+    Invariants:
+        - 枚举值是复盘输出与训练反馈路由依赖的稳定协议字段。
+    """
+
     USEFUL = "useful"
     FALSE_POSITIVE = "false_positive"
     FALSE_NEGATIVE = "false_negative"
@@ -83,6 +111,10 @@ class PlanTransition:
         occurred_at: 带时区的迁移时间。
         reason: 可审计原因。
         approval_interaction_id: 激活等受控迁移对应的 HITL 标识。
+
+    Invariants:
+        - actor_id 与 reason 不能为空白字符串。
+        - occurred_at 必须包含时区。
     """
 
     from_status: PlanStatus
@@ -271,6 +303,7 @@ class Review:
 
     Invariants:
         - 复盘不会回写历史计划或扫描结果。
+        - feedback_destinations 只能写入允许的未来反馈通道。
     """
 
     review_id: str

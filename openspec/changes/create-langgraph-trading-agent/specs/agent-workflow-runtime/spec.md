@@ -15,11 +15,11 @@
 系统 MUST 通过具有输入输出校验 schema 的显式 graph node 和 tool 路由受支持的请求。对于不支持或存在歧义的请求，系统 MUST 发起澄清，不得虚构动作。
 
 系统 MUST 作为可扩展 Agent 中台运行：自然语言分类器只输出结构化 intent、稳定
-journey ID 和实体；完整业务旅程必须通过可替换插件注册。通用会话运行时不得匹配
-业务关键词、枚举具体业务 journey/HITL subject、构造业务默认值，或直接依赖具体
-capability service。新增旅程 MUST 能在不修改通用运行时的情况下完成启动与 HITL
-恢复接入。稳定的 journey ID、Card kind、event type 和 schema 字段属于版本化协议，
-不视为自然语言硬编码，但必须由 registry 或 catalog 统一管理。
+workflow ID 和实体；完整业务 Workflow 必须通过可替换注册项装配。通用会话运行时
+不得匹配业务关键词、枚举具体业务 workflow/HITL subject、构造业务默认值，或直接
+依赖具体 capability service。新增 Workflow MUST 能在不修改通用运行时的情况下完成
+启动与 HITL 恢复接入。稳定的 Workflow ID、Card kind、event type 和 schema 字段属于
+版本化协议，不视为自然语言硬编码，但必须由 registry 或 catalog 统一管理。
 
 #### Scenario: 路由受支持的研究请求
 - **WHEN** 用户请求分析一个可识别的证券
@@ -29,20 +29,24 @@ capability service。新增旅程 MUST 能在不修改通用运行时的情况�
 - **WHEN** 证券解析返回多个合理候选项
 - **THEN** graph 在获取或呈现特定证券结论前中断，并要求用户选择
 
-#### Scenario: 注册新的业务旅程
-- **WHEN** 部署方提供一个新的 Journey 插件及其结构化意图分类结果
+#### Scenario: 注册新的业务 Workflow
+- **WHEN** 部署方提供一个新的 Workflow 注册项及其结构化意图分类结果
 - **THEN** composition root 通过统一注册接口装配该插件，通用会话运行时能够启动并恢复它，且无需新增针对该业务的条件分支
 
-#### Scenario: 未配置分类器或旅程
-- **WHEN** 用户消息无法可靠分类，或分类结果指向未注册的 journey ID
+#### Scenario: 未配置分类器或 Workflow
+- **WHEN** 用户消息无法可靠分类，或分类结果指向未注册的 workflow ID
 - **THEN** 系统 fail closed 并返回通用澄清或不支持 Card，不得通过关键词、相似字符串或默认业务动作猜测用户意图
 
+#### Scenario: Graph 路由结果驱动 Workflow
+- **WHEN** 分类器返回一个已注册的 workflow ID 和 Agent intent
+- **THEN** Supervisor Graph 校验并返回路由结果，会话入口只按该结果启动 Workflow，不得在 Graph 之外再次独立推断或改写路由
+
 ### Requirement: 类型化部署策略与稳定协议边界
-系统 MUST 通过唯一类型化配置入口管理数据库、checkpoint namespace、认证、模型端点、worker、提醒渠道、市场目录、Agent Tool 授权、Journey 业务目录和用户可见策略文案，并由 composition root 显式注入生产对象。实现层不得以固定证券、用户、租户、模型、策略、部署地址、自然语言短语或伪造 lineage 作为隐式 fallback。稳定协议 ID、Card kind、event type、schema version、领域状态机和产品市场边界 MUST 集中注册和校验，不得开放为未经校验的任意配置。
+系统 MUST 通过唯一类型化配置入口管理数据库、checkpoint namespace、认证、模型端点、worker、提醒渠道、市场目录、Agent Tool 授权、Workflow 业务目录和用户可见策略文案，并由 composition root 显式注入生产对象。实现层不得以固定证券、用户、租户、模型、策略、部署地址、自然语言短语或伪造 lineage 作为隐式 fallback。稳定协议 ID、Card kind、event type、schema version、领域状态机和产品市场边界 MUST 集中注册和校验，不得开放为未经校验的任意配置。
 
 #### Scenario: 部署方覆盖 Research-to-plan 策略
 - **WHEN** 部署配置修改提醒渠道、复盘资源目录、计划 lineage 类型或 Planning 字段目录
-- **THEN** composition root 将同一份配置注入 Journey 与 presenter，所有入口使用一致策略，且实现层不存在第二套静默默认
+- **THEN** composition root 将同一份配置注入 Workflow 与 presenter，所有入口使用一致策略，且实现层不存在第二套静默默认
 
 #### Scenario: 配置引用未知 Agent 或 Worker
 - **WHEN** 部署级 Tool allowlist 或 worker 目录引用未注册协议 ID

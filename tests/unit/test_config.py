@@ -5,9 +5,9 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from trade_agent.apps.journeys import (
+from trade_agent.apps.workflows import (
     planning_presenter_config_from_settings,
-    research_to_plan_journey_config_from_settings,
+    research_to_plan_workflow_config_from_settings,
 )
 from trade_agent.core.config import AppEnvironment, AppSettings
 
@@ -45,7 +45,7 @@ def test_planning_presenter_config_uses_typed_settings_catalog() -> None:
         }
     )
 
-    presenter_config = planning_presenter_config_from_settings(settings.planning_journey)
+    presenter_config = planning_presenter_config_from_settings(settings.planning_workflow)
 
     assert settings.market.exchange_codes == ("NYSE", "ARCA")
     assert settings.market.symbol_pattern == r"^[A-Z.]+$"
@@ -80,9 +80,9 @@ def test_research_to_plan_runtime_uses_typed_deployment_policy() -> None:
         {
             "checkpoint": {"namespace": "course-runtime"},
             "conversation_runtime": {
-                "unregistered_journey_message": "当前部署没有注册对应业务流程"
+                "unregistered_workflow_message": "当前部署没有注册对应业务流程"
             },
-            "research_to_plan_journey": {
+            "research_to_plan_workflow": {
                 "reminder_approval": {
                     "notification_channel": "desktop_push",
                     "summary_template": "为计划 {plan_id} 启用桌面复核提醒。",
@@ -96,12 +96,12 @@ def test_research_to_plan_runtime_uses_typed_deployment_policy() -> None:
         }
     )
 
-    runtime_config = research_to_plan_journey_config_from_settings(
-        settings.research_to_plan_journey
+    runtime_config = research_to_plan_workflow_config_from_settings(
+        settings.research_to_plan_workflow
     )
 
     assert settings.checkpoint.namespace == "course-runtime"
-    assert settings.conversation_runtime.unregistered_journey_message == (
+    assert settings.conversation_runtime.unregistered_workflow_message == (
         "当前部署没有注册对应业务流程"
     )
     assert runtime_config.reminder_approval.notification_channel == "desktop_push"

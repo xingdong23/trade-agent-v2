@@ -2,11 +2,14 @@
 
 from typing import Any
 
-from trade_agent.capabilities.market_research.contracts import CapabilityResult
+from trade_agent.capabilities.market_research.contracts import (
+    CapabilityCardPresenter,
+    CapabilityResult,
+)
 from trade_agent.core.presentation import CARD_PROTOCOL_VERSION, CardEnvelope, CardSource
 
 
-class MarketResearchCardPresenter:
+class MarketResearchCardPresenter(CapabilityCardPresenter):
     def present(self, result: CapabilityResult) -> CardEnvelope:
         card_type = _string(result.payload, "card_type")
         if card_type == "research_artifact":

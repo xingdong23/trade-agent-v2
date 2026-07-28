@@ -29,7 +29,7 @@ class ToolPolicy(Protocol):
         ...
 
 
-class ManifestToolPolicy:
+class ManifestToolPolicy(ToolPolicy):
     def __init__(self, allowlists: dict[str, frozenset[str]]) -> None:
         self._allowlists = dict(allowlists)
 

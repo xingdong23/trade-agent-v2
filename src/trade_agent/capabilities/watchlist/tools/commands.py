@@ -14,11 +14,21 @@ from trade_agent.capabilities.watchlist.contracts import (
     UniverseSnapshot,
 )
 from trade_agent.core.llm.contracts import JsonValue
-from trade_agent.core.tools import ToolManifest, ToolRequest, ToolResult
+from trade_agent.core.tools import ToolManifest, ToolProtocol, ToolRequest, ToolResult
 from trade_agent.core.tools.identity import bind_trusted_identity, identity_fields_for_manifest
 
 
 class WatchlistToolApplication(Protocol):
+    """Watchlist Tool 调用的确定性应用服务协议。
+
+    Contract:
+        - 导入、建议确认和冻结快照必须执行 owner 隔离与幂等约束。
+        - Tool 只转换 schema；去重、合并和来源保留规则由实现方负责。
+
+    Implemented by:
+        ``WatchlistService`` 与测试中的显式 watchlist application fake。
+    """
+
     def classify_import(
         self, rows: Sequence[tuple[str, str | None, ImportStatus]]
     ) -> tuple[ImportRow, ...]: ...
@@ -70,7 +80,16 @@ _IMPORT_ROW_SCHEMA: dict[str, JsonValue] = {
 
 
 @dataclass(frozen=True, slots=True)
-class ValidateWatchlistImportTool:
+class ValidateWatchlistImportTool(ToolProtocol):
+    """校验 Watchlist 导入内容的只读 Tool 适配器。
+
+    Attributes:
+        application: 注入的 watchlist 应用协议实现，负责执行逐行分类用例。
+
+    Invariants:
+        - Tool 自身不承载导入规则，只做身份绑定、参数解析和委托调用。
+    """
+
     application: WatchlistToolApplication
 
     manifest = ToolManifest(
@@ -116,7 +135,16 @@ class ValidateWatchlistImportTool:
 
 
 @dataclass(frozen=True, slots=True)
-class ApproveWatchlistImportTool:
+class ApproveWatchlistImportTool(ToolProtocol):
+    """按审批结果写入 Watchlist membership 的 Tool 适配器。
+
+    Attributes:
+        application: 注入的 watchlist 应用协议实现，负责执行导入审批写入用例。
+
+    Invariants:
+        - Tool 自身不承载导入规则，只做身份绑定、审批上下文校验和委托调用。
+    """
+
     application: WatchlistToolApplication
 
     manifest = ToolManifest(
@@ -198,7 +226,16 @@ class ApproveWatchlistImportTool:
 
 
 @dataclass(frozen=True, slots=True)
-class AcceptClassificationSuggestionTool:
+class AcceptClassificationSuggestionTool(ToolProtocol):
+    """接受 Watchlist 分类建议的 Tool 适配器。
+
+    Attributes:
+        application: 注入的 watchlist 应用协议实现，负责执行分类确认用例。
+
+    Invariants:
+        - Tool 自身不承载分类规则，只做身份绑定、参数校验和委托调用。
+    """
+
     application: WatchlistToolApplication
 
     manifest = ToolManifest(
@@ -284,7 +321,16 @@ class AcceptClassificationSuggestionTool:
 
 
 @dataclass(frozen=True, slots=True)
-class FreezeUniverseTool:
+class FreezeUniverseTool(ToolProtocol):
+    """冻结 Watchlist 证券集合为 Universe 快照的 Tool 适配器。
+
+    Attributes:
+        application: 注入的 watchlist 应用协议实现，负责执行 universe 冻结用例。
+
+    Invariants:
+        - Tool 自身不承载冻结规则，只做身份绑定、参数校验和委托调用。
+    """
+
     application: WatchlistToolApplication
 
     manifest = ToolManifest(

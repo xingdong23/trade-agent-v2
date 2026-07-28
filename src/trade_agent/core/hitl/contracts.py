@@ -10,7 +10,18 @@ from trade_agent.core.llm.contracts import JsonValue
 
 
 class InteractionType(StrEnum):
-    """人工参与原因，决定前端交互卡片形态。"""
+    """人工参与原因，决定前端交互卡片形态。
+
+    Attributes:
+        CLARIFICATION: 需要用户补充信息或消除歧义。
+        APPROVAL: 需要用户显式批准受控写操作。
+        REVIEW: 需要用户对结果、候选或闭环状态进行复核。
+        CORRECTION: 需要用户修正系统草稿、分类或字段值。
+        EXCEPTION_RESOLUTION: 需要用户处理异常、冲突或无法自动恢复的状态。
+
+    Invariants:
+        - 枚举值决定 HITL 卡片渲染和恢复语义，属于稳定协议字段。
+    """
 
     CLARIFICATION = "clarification"
     APPROVAL = "approval"
@@ -20,7 +31,17 @@ class InteractionType(StrEnum):
 
 
 class InteractionStatus(StrEnum):
-    """HITL 聚合允许的生命周期状态。"""
+    """HITL 聚合允许的生命周期状态。
+
+    Attributes:
+        PENDING: 交互已创建，仍等待人工处理。
+        RESOLVED: 交互已经被人工完成并记录结果。
+        EXPIRED: 交互超过有效期，不再允许正常处理。
+        CANCELLED: 交互被系统或人工显式取消。
+
+    Invariants:
+        - 枚举值驱动生命周期迁移和恢复逻辑，属于稳定协议字段。
+    """
 
     PENDING = "pending"
     RESOLVED = "resolved"

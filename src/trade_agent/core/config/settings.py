@@ -11,6 +11,17 @@ from trade_agent.core.llm import ModelEndpoint
 
 
 class AppEnvironment(StrEnum):
+    """应用部署环境的稳定枚举。
+
+    Attributes:
+        DEVELOPMENT: 本地开发环境，允许较宽松的默认配置与 fake 依赖。
+        TEST: 自动化测试环境，强调可重复和隔离执行。
+        PRODUCTION: 生产环境，必须满足认证、持久化与模型路由等严格门禁。
+
+    Invariants:
+        - 枚举值是环境变量与启动校验共同依赖的稳定协议字段。
+    """
+
     DEVELOPMENT = "development"
     TEST = "test"
     PRODUCTION = "production"
@@ -107,13 +118,29 @@ class ConversationRuntimeSettings(StrictSettingsModel):
     """通用会话运行时的部署级文案与失败策略。
 
     Attributes:
-        unregistered_journey_message: 分类结果没有对应 Journey 插件时返回给用户的提示。
+        unregistered_workflow_message: 分类结果没有对应 Workflow 插件时返回给用户的提示。
+        unsupported_notice_title: 通用 unsupported Notice Card 的标题。
+        unsupported_notice_actions: 通用 unsupported Notice Card 允许的语义动作。
     """
 
-    unregistered_journey_message: str = Field(
-        default="当前请求没有已注册的业务旅程, 请补充信息或联系管理员配置能力。",
+    unregistered_workflow_message: str = Field(
+        default="当前请求没有已注册的业务工作流, 请补充信息或联系管理员配置能力。",
         min_length=1,
     )
+    unsupported_notice_title: str = Field(default="当前请求不受支持", min_length=1)
+    unsupported_notice_actions: tuple[str, ...] = ("refresh",)
+
+    @model_validator(mode="after")
+    def validate_notice_actions(self) -> "ConversationRuntimeSettings":
+        """规范化 Notice Card 动作并拒绝空值或重复项。"""
+
+        actions = tuple(action.strip() for action in self.unsupported_notice_actions)
+        if not actions or any(not action for action in actions):
+            raise ValueError("conversation_runtime.unsupported_notice_actions 不能为空")
+        if len(set(actions)) != len(actions):
+            raise ValueError("conversation_runtime.unsupported_notice_actions 不能重复")
+        object.__setattr__(self, "unsupported_notice_actions", actions)
+        return self
 
 
 class MarketSettings(StrictSettingsModel):
@@ -130,7 +157,7 @@ class MarketSettings(StrictSettingsModel):
         security_not_found_message: 找不到可靠证券候选时的用户提示。
 
     Notes:
-        首版产品仍只支持美股；集中维护交易所目录和代码格式，可以避免 Journey、
+        首版产品仍只支持美股；集中维护交易所目录和代码格式，可以避免 Workflow、
         解析器与前端表单各自持有一份容易漂移的列表。
     """
 
@@ -439,7 +466,7 @@ class PlanningFieldSettings(StrictSettingsModel):
         max_length: 文本字段最大长度；``None`` 表示由运行时策略补齐或不声明。
         plan_attribute: 当字段映射到 ``TradingPlan`` 属性时使用的属性名。
         source_fallback: 当计划中缺少字段来源时使用的默认来源文案。
-        include_in_request_form: 是否出现在 journey 请求表单中。
+        include_in_request_form: 是否出现在 workflow 请求表单中。
         include_in_presenter_form: 是否出现在 presenter 生成的计划表单卡中。
         include_in_approval: 是否出现在审批 facts 中。
         approval_severity: 审批 facts 默认严重度。
@@ -505,8 +532,8 @@ class PlanningArtifactSectionSettings(StrictSettingsModel):
         return self
 
 
-class PlanningJourneySettings(StrictSettingsModel):
-    """Planning 会话旅程的部署级入口配置。
+class PlanningWorkflowSettings(StrictSettingsModel):
+    """Planning 会话工作流的部署级入口配置。
 
     Attributes:
         choice_title: 入口 Choice Card 标题。
@@ -720,14 +747,14 @@ class PlanningJourneySettings(StrictSettingsModel):
     evidence_provenance_value: str = "计划引用的不可变 evidence"
 
     @model_validator(mode="after")
-    def validate_direction_template(self) -> "PlanningJourneySettings":
+    def validate_direction_template(self) -> "PlanningWorkflowSettings":
         if not self.operations:
-            raise ValueError("planning journey 至少需要一个操作定义")
+            raise ValueError("planning workflow 至少需要一个操作定义")
         normalized_keys = tuple(field.key.strip() for field in self.fields)
         if not normalized_keys or any(not key for key in normalized_keys):
-            raise ValueError("planning journey.fields 不能为空")
+            raise ValueError("planning workflow.fields 不能为空")
         if len(set(normalized_keys)) != len(normalized_keys):
-            raise ValueError("planning journey.fields 不能重复")
+            raise ValueError("planning workflow.fields 不能重复")
         known = set(normalized_keys)
         for section in self.artifact_sections:
             unknown = set(section.field_keys) - known
@@ -917,8 +944,8 @@ class PlanLineageSettings(StrictSettingsModel):
     source_type: str = Field(default="scan_result", min_length=1)
 
 
-class ResearchToPlanJourneySettings(StrictSettingsModel):
-    """Research-to-plan Journey 的全部部署级策略。
+class ResearchToPlanWorkflowSettings(StrictSettingsModel):
+    """Research-to-plan Workflow 的全部部署级策略。
 
     Attributes:
         security_clarification: 证券澄清策略。
@@ -987,8 +1014,8 @@ class AppSettings(BaseSettings):
         market: 当前版本允许的市场与交易所分类快照。
         litellm: LiteLLM 路由配置集合。
         quantitative_model: 专用量化模型 runtime 配置。
-        planning_journey: planning 会话旅程的部署级入口配置。
-        research_to_plan_journey: research-to-plan 会话旅程的部署级策略。
+        planning_workflow: planning 会话工作流的部署级入口配置。
+        research_to_plan_workflow: research-to-plan 会话工作流的部署级策略。
         agent_tool_policy: 部署级 Agent Tool 授权覆盖。
         worker: 后台 worker 配置。
         reminder: 提醒交付策略与展示文案。
@@ -1014,9 +1041,9 @@ class AppSettings(BaseSettings):
     market: MarketSettings = Field(default_factory=MarketSettings)
     litellm: LiteLLMSettings = Field(default_factory=LiteLLMSettings)
     quantitative_model: QuantitativeModelSettings = Field(default_factory=QuantitativeModelSettings)
-    planning_journey: PlanningJourneySettings = Field(default_factory=PlanningJourneySettings)
-    research_to_plan_journey: ResearchToPlanJourneySettings = Field(
-        default_factory=ResearchToPlanJourneySettings
+    planning_workflow: PlanningWorkflowSettings = Field(default_factory=PlanningWorkflowSettings)
+    research_to_plan_workflow: ResearchToPlanWorkflowSettings = Field(
+        default_factory=ResearchToPlanWorkflowSettings
     )
     agent_tool_policy: AgentToolPolicySettings = Field(default_factory=AgentToolPolicySettings)
     worker: WorkerSettings = Field(default_factory=WorkerSettings)

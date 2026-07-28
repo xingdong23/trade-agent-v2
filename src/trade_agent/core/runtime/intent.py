@@ -16,18 +16,18 @@ class IntentClassification:
 
     Attributes:
         intent: Supervisor 使用的顶层 Agent 意图或扩展 Agent ID。
-        journey_id: JourneyRegistry 中注册的业务旅程标识；为空表示需要澄清。
+        workflow_id: WorkflowRegistry 中注册的业务工作流标识；为空表示需要澄清。
         confidence: 分类置信度，取值范围为 0 到 1。
         entities: 分类阶段提取的稳定实体，例如标准化美股代码。
         reason_code: 可审计原因码，不保存模型的自由文本推理过程。
 
     Invariants:
         - ``confidence`` 必须位于闭区间 ``[0, 1]``。
-        - 只有已注册的 ``journey_id`` 才能在运行时执行。
+        - 只有已注册的 ``workflow_id`` 才能在运行时执行。
     """
 
     intent: RouteIntent
-    journey_id: str | None
+    workflow_id: str | None
     confidence: float
     reason_code: str
     entities: tuple[tuple[str, str], ...] = ()
@@ -55,8 +55,8 @@ class IntentClassifier(Protocol):
     """将自然语言转换为中台可执行的结构化路由决定。
 
     Contract:
-        - 实现必须返回版本稳定的 ``journey_id``，不能返回任意 Python 调用目标。
-        - 无法可靠分类时必须返回 ``journey_id=None``，由 HITL 负责澄清。
+        - 实现必须返回版本稳定的 ``workflow_id``，不能返回任意 Python 调用目标。
+        - 无法可靠分类时必须返回 ``workflow_id=None``，由 HITL 负责澄清。
         - 分类器不得执行 Tool、写数据库或产生交易副作用。
 
     Implemented by:
@@ -80,11 +80,11 @@ class IntentClassifier(Protocol):
         ...
 
 
-class ClarificationIntentClassifier:
+class ClarificationIntentClassifier(IntentClassifier):
     """在没有配置分类 provider 时使用的安全降级分类器。
 
     Contract:
-        - 永远不猜测用户意图，也不选择可执行业务旅程。
+        - 永远不猜测用户意图，也不选择可执行业务工作流。
         - 调用方应把结果投影为澄清或 unsupported Card。
 
     Implemented by:
@@ -99,7 +99,7 @@ class ClarificationIntentClassifier:
             owner_id: 已认证用户；安全降级不会读取租户配置。
 
         Returns:
-            ``journey_id=None`` 的 clarification 分类。
+            ``workflow_id=None`` 的 clarification 分类。
         """
 
         del message, owner_id

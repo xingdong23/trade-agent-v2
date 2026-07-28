@@ -8,10 +8,16 @@ from typing import TypedDict
 class Intent(StrEnum):
     """Supervisor 内置的顶层路由常量。
 
-    说明:
-        这些值覆盖当前框架必须保留的稳定语义，其中 ``clarification`` 是全局安全回退。
-        业务侧可以通过注册新的 ``AgentManifest.agent_id`` 扩展可路由目标；运行时不会把
-        路由空间限制在本枚举内。
+    Attributes:
+        RESEARCH: 进入研究类工作流，例如证券或主题分析。
+        STRATEGY: 进入策略编写、发布或相关能力。
+        PLANNING: 进入交易计划或研究到计划的工作流。
+        CLARIFICATION: 进入全局安全回退路径，要求用户补充或澄清信息。
+
+    Invariants:
+        - 这些值覆盖当前框架必须保留的稳定语义，其中 ``clarification`` 是全局安全回退。
+        - 业务侧可以通过注册新的 ``AgentManifest.agent_id`` 扩展可路由目标；运行时不会把
+          路由空间限制在本枚举内。
     """
 
     RESEARCH = "research"
@@ -131,6 +137,7 @@ class AgentState(TypedDict, total=False):
         error_summary: 可持久化的脱敏错误摘要。
         event_cursor: 已消费事件序号。
         selected_agent_id: Supervisor 选择的 Agent manifest ID。
+        workflow_id: 分类器选择的已注册 Workflow ID；需要澄清时为空。
         policy_decision: Tool 执行前的策略结论。
 
     Invariants:
@@ -150,6 +157,7 @@ class AgentState(TypedDict, total=False):
     error_summary: ErrorSummary
     event_cursor: int
     selected_agent_id: str
+    workflow_id: str | None
     policy_decision: str
 
 

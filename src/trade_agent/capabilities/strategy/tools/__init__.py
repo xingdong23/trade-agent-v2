@@ -4,12 +4,23 @@ from dataclasses import dataclass
 
 from trade_agent.capabilities.strategy.application import StrategyPublishingService
 from trade_agent.capabilities.strategy.contracts import StrategyDraft
-from trade_agent.core.tools import ToolManifest, ToolRequest, ToolResult
+from trade_agent.core.tools import ToolManifest, ToolProtocol, ToolRequest, ToolResult
 from trade_agent.core.tools.identity import bind_trusted_identity, identity_fields_for_manifest
 
 
 @dataclass(frozen=True, slots=True)
-class PublishStrategyTool:
+class PublishStrategyTool(ToolProtocol):
+    """策略发布 Tool 的受控写入适配器。
+
+    Attributes:
+        application: 注入的策略发布应用服务，负责执行最终发布用例。
+        draft: 注入的待发布策略草稿，用于校验 `strategy_id` 与 `payload_hash` 一致性。
+
+    Invariants:
+        - Tool 自身不承载策略发布规则，只做身份绑定、参数校验和委托调用。
+        - draft 必须与当前请求指向同一份待发布内容。
+    """
+
     application: StrategyPublishingService
     draft: StrategyDraft
 

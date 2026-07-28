@@ -4,10 +4,10 @@
 
 ## 源码阅读
 
-第一次阅读项目时，先看 [`docs/course-guide.md`](docs/course-guide.md)。该导读从一次用户
+第一次阅读项目时，先看 [`docs/runtime-flow.md`](docs/runtime-flow.md)。该文档从一次用户
 请求出发，解释 `core`、`agents`、`capabilities`、`adapters`、`apps` 的职责，以及
-Tool、Card、Event 和 HITL 如何共同工作。`docs/architecture-review.md` 是早期骨架阶段
-的历史评审记录，不代表当前完成度。
+Tool、Card、Event 和 HITL 如何共同工作。`docs/course-guide.md` 提供进一步的源码导读；
+`docs/architecture-review.md` 是早期骨架阶段的历史评审记录，不代表当前完成度。
 
 新增 Python 模型或协议前，请遵守 [`docs/docstring-standard.md`](docs/docstring-standard.md)
 中的中文 docstring 结构；关键契约由架构测试强制检查。
@@ -38,7 +38,8 @@ uv run trade-agent run --thread local-thread "研究 NVDA"
 uv run trade-agent-worker
 ```
 
-课程源码导读见 `docs/course-guide.md`，早期架构评审见 `docs/architecture-review.md`，
+当前主流程见 `docs/runtime-flow.md`，源码导读见 `docs/course-guide.md`，
+早期架构评审见 `docs/architecture-review.md`，
 运行与故障恢复见 `docs/operations.md`，当前交付验证证据见 `docs/verification.md`。
 
 ## PyCharm 打开项目时出现红线 / 无法跳转怎么办

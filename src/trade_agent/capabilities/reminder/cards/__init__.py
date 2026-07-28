@@ -4,11 +4,11 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
-from trade_agent.capabilities.reminder.contracts import CapabilityResult
+from trade_agent.capabilities.reminder.contracts import CapabilityCardPresenter, CapabilityResult
 from trade_agent.core.presentation import CARD_PROTOCOL_VERSION, CardEnvelope, CardSource
 
 
-class ReminderCardPresenter:
+class ReminderCardPresenter(CapabilityCardPresenter):
     def present(self, result: CapabilityResult) -> CardEnvelope:
         card_type = _string(result.payload, "card_type")
         if card_type == "reminder":

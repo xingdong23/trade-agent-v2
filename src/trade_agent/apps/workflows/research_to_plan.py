@@ -1,4 +1,4 @@
-"""Research -> plan 会话旅程插件。"""
+"""Research -> plan 会话工作流插件。"""
 
 from __future__ import annotations
 
@@ -8,11 +8,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from uuid import uuid4
 
-from trade_agent.apps.journeys.contracts import (
-    ConversationJourney,
+from trade_agent.apps.workflows.contracts import (
     ConversationRunResult,
-    ConversationRuntimePort,
-    JourneyStartContext,
+    ConversationWorkflow,
+    WorkflowRuntime,
+    WorkflowStartContext,
 )
 from trade_agent.capabilities.planning.application import (
     PlanDraftRequest,
@@ -21,7 +21,7 @@ from trade_agent.capabilities.planning.application import (
 )
 from trade_agent.capabilities.planning.cards import PlanningCardPresenter
 from trade_agent.capabilities.planning.contracts import PlanLineage, ReviewOutcome, TradingPlan
-from trade_agent.core.config import ResearchToPlanJourneySettings
+from trade_agent.core.config import ResearchToPlanWorkflowSettings
 from trade_agent.core.hitl import (
     DefaultHitlService,
     HumanInteraction,
@@ -30,8 +30,9 @@ from trade_agent.core.hitl import (
 )
 from trade_agent.core.llm.contracts import JsonValue
 from trade_agent.core.presentation import CardEnvelope
+from trade_agent.core.runtime import Intent
 
-JOURNEY_RESEARCH_TO_PLAN = "research_to_plan"
+WORKFLOW_RESEARCH_TO_PLAN = "research_to_plan"
 
 _SUBJECT_SECURITY_CHOICE = "research_security_choice"
 _SUBJECT_SCAN_REVIEW = "research_scan_review"
@@ -62,7 +63,7 @@ class SecurityCandidate:
 
 
 @dataclass(frozen=True, slots=True)
-class ResearchJourneyResult:
+class ResearchWorkflowResult:
     """Research capability 完成一次准备后交回编排层的结果集合。
 
     Attributes:
@@ -74,7 +75,7 @@ class ResearchJourneyResult:
         plan_values: 后续生成计划草稿所需的结构化事实。
 
     Invariants:
-        - Card 必须来自 capability presenter，journey 不能重算预测或排名。
+        - Card 必须来自 capability presenter，workflow 不能重算预测或排名。
     """
 
     security_id: str
@@ -155,7 +156,7 @@ class PlanApprovalPayloadStrategy:
         include_text_fallback: 是否一并转发 presenter 生成的 ``text_fallback``。
 
     Notes:
-        Journey 只负责决定在何时请求审批；具体暴露哪些审批字段属于部署策略。
+        Workflow 只负责决定在何时请求审批；具体暴露哪些审批字段属于部署策略。
     """
 
     payload_fields: tuple[str, ...]
@@ -194,7 +195,7 @@ class ReminderApprovalConfig:
         summary_template: 提醒审批摘要模板，必须接受 ``plan_id`` 占位符。
         plan_fact_label: 审批 facts 中展示计划标识的标签。
         channel_fact_label: 审批 facts 中展示提醒渠道的标签。
-        notification_channel: Journey 请求 backend 激活提醒时传入的渠道标识。
+        notification_channel: Workflow 请求 backend 激活提醒时传入的渠道标识。
         text_fallback: 非结构化客户端展示的降级文案。
     """
 
@@ -319,7 +320,7 @@ class PlanReviewConfig:
 
 @dataclass(frozen=True, slots=True)
 class PlanLineageConfig:
-    """研究旅程生成计划草稿时使用的 lineage 策略。
+    """研究工作流生成计划草稿时使用的 lineage 策略。
 
     Attributes:
         source_type: 写入 ``PlanLineage.source_type`` 的稳定来源类型。
@@ -332,8 +333,8 @@ class PlanLineageConfig:
 
 
 @dataclass(frozen=True, slots=True)
-class ResearchToPlanJourneyConfig:
-    """Research-to-plan Journey 的部署级策略集合。
+class ResearchToPlanWorkflowConfig:
+    """Research-to-plan Workflow 的部署级策略集合。
 
     Attributes:
         security_clarification: 证券歧义澄清与证券未命中提示策略。
@@ -352,16 +353,16 @@ class ResearchToPlanJourneyConfig:
     plan_lineage: PlanLineageConfig
 
 
-def research_to_plan_journey_config_from_settings(
-    settings: ResearchToPlanJourneySettings,
-) -> ResearchToPlanJourneyConfig:
-    """把类型化部署配置转换为 Research-to-plan Journey 运行时策略。
+def research_to_plan_workflow_config_from_settings(
+    settings: ResearchToPlanWorkflowSettings,
+) -> ResearchToPlanWorkflowConfig:
+    """把类型化部署配置转换为 Research-to-plan Workflow 运行时策略。
 
     Args:
         settings: 从 ``AppSettings`` 读取的只读部署配置。
 
     Returns:
-        不依赖 Pydantic 的 Journey 运行时配置对象。
+        不依赖 Pydantic 的 Workflow 运行时配置对象。
     """
 
     clarification = settings.security_clarification
@@ -369,7 +370,7 @@ def research_to_plan_journey_config_from_settings(
     plan_approval = settings.plan_approval
     reminder_approval = settings.reminder_approval
     plan_review = settings.plan_review
-    return ResearchToPlanJourneyConfig(
+    return ResearchToPlanWorkflowConfig(
         security_clarification=SecurityClarificationConfig(
             option_title=clarification.option_title,
             title=clarification.title,
@@ -414,8 +415,8 @@ def research_to_plan_journey_config_from_settings(
     )
 
 
-class ResearchJourneyBackend(Protocol):
-    """研究旅程依赖的应用边界。
+class ResearchWorkflowBackend(Protocol):
+    """研究工作流依赖的应用边界。
 
     Contract:
         - 实现方负责解析证券、准备研究、总结扫描和激活提醒。
@@ -429,7 +430,7 @@ class ResearchJourneyBackend(Protocol):
     def resolve(self, symbol: str, *, owner_id: str, run_id: str) -> tuple[SecurityCandidate, ...]:
         """把一个证券代码解析为一个或多个美国上市候选项。"""
 
-    def prepare(self, security_id: str, *, owner_id: str, run_id: str) -> ResearchJourneyResult:
+    def prepare(self, security_id: str, *, owner_id: str, run_id: str) -> ResearchWorkflowResult:
         """准备研究与量化扫描结果。"""
 
     def summarize(
@@ -453,48 +454,54 @@ class ResearchJourneyBackend(Protocol):
         """激活一个仅用于复核的提醒。"""
 
 
-class ResearchToPlanJourney(ConversationJourney):
-    """负责研究、扫描、计划、提醒与复盘闭环的会话旅程。
+class ResearchToPlanWorkflow(ConversationWorkflow):
+    """负责研究、扫描、计划、提醒与复盘闭环的会话工作流。
 
     Contract:
         - 研究结果必须先持久化，再允许人工复核与后续计划生成。
         - LLM 只能总结扫描结果，不参与价格预测、评分或排序。
-        - 该旅程生成的所有计划、提醒与复盘都必须保留来源关系。
+        - 该工作流生成的所有计划、提醒与复盘都必须保留来源关系。
 
     Implemented by:
-        组合根装配了 ``ResearchJourneyBackend`` 后注册到 runtime 的 research 插件。
+        组合根装配了 ``ResearchWorkflowBackend`` 后注册到 runtime 的 research 插件。
     """
 
     def __init__(
         self,
         *,
-        backend: ResearchJourneyBackend,
+        backend: ResearchWorkflowBackend,
         planning: PlanningService,
         hitl_service: DefaultHitlService,
         interaction_ttl_seconds: int,
         text_field_max_length: int,
-        config: ResearchToPlanJourneyConfig,
+        config: ResearchToPlanWorkflowConfig,
         presenter: PlanningCardPresenter,
     ) -> None:
         self._backend = backend
         self._planning = planning
         self._hitl = hitl_service
         if interaction_ttl_seconds < 60 or text_field_max_length < 1:
-            raise ValueError("research journey 的 HITL 策略无效")
+            raise ValueError("research workflow 的 HITL 策略无效")
         self._interaction_ttl_seconds = interaction_ttl_seconds
         self._text_field_max_length = text_field_max_length
         self._config = config
         self._presenter = presenter
 
     @property
-    def journey_ids(self) -> tuple[str, ...]:
-        """返回本旅程负责的启动 ID。"""
+    def agent_id(self) -> str:
+        """返回负责研究到计划工作流的 Agent ID。"""
 
-        return (JOURNEY_RESEARCH_TO_PLAN,)
+        return Intent.RESEARCH.value
+
+    @property
+    def workflow_ids(self) -> tuple[str, ...]:
+        """返回本工作流负责的启动 ID。"""
+
+        return (WORKFLOW_RESEARCH_TO_PLAN,)
 
     @property
     def subject_types(self) -> tuple[str, ...]:
-        """返回本旅程负责恢复的 subject type。"""
+        """返回本工作流负责恢复的 subject type。"""
 
         return (
             _SUBJECT_SECURITY_CHOICE,
@@ -507,12 +514,12 @@ class ResearchToPlanJourney(ConversationJourney):
 
     def start(
         self,
-        context: JourneyStartContext,
-        runtime: ConversationRuntimePort,
+        context: WorkflowStartContext,
+        runtime: WorkflowRuntime,
     ) -> ConversationRunResult:
         """启动 research -> plan 流程。"""
 
-        symbol = runtime.required_entity(context.classification, "symbol")
+        symbol = context.require_entity("symbol")
         candidates = self._backend.resolve(
             symbol,
             owner_id=context.owner_id,
@@ -554,7 +561,7 @@ class ResearchToPlanJourney(ConversationJourney):
                 interaction.interaction_id,
                 card,
             )
-        card = self._prepare_research_journey(
+        card = self._prepare_research_workflow(
             owner_id=context.owner_id,
             thread_id=context.thread_id,
             run_id=context.run_id,
@@ -572,9 +579,9 @@ class ResearchToPlanJourney(ConversationJourney):
     def resume(
         self,
         interaction: HumanInteraction,
-        runtime: ConversationRuntimePort,
+        runtime: WorkflowRuntime,
     ) -> CardEnvelope | None:
-        """从 research 旅程的暂停点恢复执行。"""
+        """从 research 工作流的暂停点恢复执行。"""
 
         if interaction.subject_type == _SUBJECT_SECURITY_CHOICE:
             runtime.publish_interaction(interaction, "card.resolved")
@@ -595,10 +602,10 @@ class ResearchToPlanJourney(ConversationJourney):
     def _handle_security_choice(
         self,
         interaction: HumanInteraction,
-        runtime: ConversationRuntimePort,
+        runtime: WorkflowRuntime,
     ) -> CardEnvelope:
         selected = _required_text(interaction.response or {}, "selected_security")
-        return self._prepare_research_journey(
+        return self._prepare_research_workflow(
             owner_id=interaction.owner_id,
             thread_id=interaction.thread_id,
             run_id=interaction.run_id,
@@ -606,14 +613,14 @@ class ResearchToPlanJourney(ConversationJourney):
             runtime=runtime,
         )
 
-    def _prepare_research_journey(
+    def _prepare_research_workflow(
         self,
         *,
         owner_id: str,
         thread_id: str,
         run_id: str,
         security_id: str,
-        runtime: ConversationRuntimePort,
+        runtime: WorkflowRuntime,
     ) -> CardEnvelope:
         result = self._backend.prepare(security_id, owner_id=owner_id, run_id=run_id)
         runtime.publish_card(
@@ -667,14 +674,14 @@ class ResearchToPlanJourney(ConversationJourney):
     def _handle_scan_review(
         self,
         interaction: HumanInteraction,
-        runtime: ConversationRuntimePort,
+        runtime: WorkflowRuntime,
     ) -> CardEnvelope:
         runtime.publish_interaction(interaction, "card.resolved")
         if interaction.resolution != "confirm":
             return _interaction_card(interaction)
-        journey = runtime.require_run_context(interaction.owner_id, interaction.run_id)
-        scan_result = journey["scan_result"]
-        plan_values = journey["plan_values"]
+        workflow = runtime.require_run_context(interaction.owner_id, interaction.run_id)
+        scan_result = workflow["scan_result"]
+        plan_values = workflow["plan_values"]
         if not isinstance(scan_result, Mapping) or not isinstance(plan_values, Mapping):
             raise RuntimeError("research run context 格式无效")
         summary = self._backend.summarize(
@@ -683,11 +690,11 @@ class ResearchToPlanJourney(ConversationJourney):
             run_id=interaction.run_id,
         )
         plan = self._planning.create_draft(
-            _journey_plan_request(
+            _workflow_plan_request(
                 plan_values,
                 plan_id=str(uuid4()),
                 owner_id=interaction.owner_id,
-                security_id=_required_text(journey, "security_id"),
+                security_id=_required_text(workflow, "security_id"),
                 run_id=interaction.run_id,
                 summary=summary,
                 lineage_config=self._config.plan_lineage,
@@ -704,7 +711,7 @@ class ResearchToPlanJourney(ConversationJourney):
     def _handle_plan_form(
         self,
         interaction: HumanInteraction,
-        runtime: ConversationRuntimePort,
+        runtime: WorkflowRuntime,
     ) -> CardEnvelope:
         current = self._planning.get_plan(
             owner_id=interaction.owner_id,
@@ -732,7 +739,7 @@ class ResearchToPlanJourney(ConversationJourney):
     def _handle_plan_approval(
         self,
         interaction: HumanInteraction,
-        runtime: ConversationRuntimePort,
+        runtime: WorkflowRuntime,
     ) -> CardEnvelope:
         current = self._planning.get_plan(
             owner_id=interaction.owner_id,
@@ -808,7 +815,7 @@ class ResearchToPlanJourney(ConversationJourney):
     def _handle_reminder_approval(
         self,
         interaction: HumanInteraction,
-        runtime: ConversationRuntimePort,
+        runtime: WorkflowRuntime,
     ) -> CardEnvelope:
         runtime.publish_interaction(interaction, "card.resolved")
         if interaction.resolution != "confirm":
@@ -839,7 +846,7 @@ class ResearchToPlanJourney(ConversationJourney):
     def _handle_plan_review(
         self,
         interaction: HumanInteraction,
-        runtime: ConversationRuntimePort,
+        runtime: WorkflowRuntime,
     ) -> CardEnvelope:
         runtime.publish_interaction(interaction, "card.resolved")
         if interaction.resolution != "confirm":
@@ -1224,7 +1231,7 @@ def _request_from_values(
     )
 
 
-def _journey_plan_request(
+def _workflow_plan_request(
     values: Mapping[str, JsonValue],
     *,
     plan_id: str,
@@ -1234,7 +1241,7 @@ def _journey_plan_request(
     summary: str,
     lineage_config: PlanLineageConfig,
 ) -> PlanDraftRequest:
-    """使用扫描 lineage 和 LLM 摘要构造研究旅程中的计划草稿。"""
+    """使用扫描 lineage 和 LLM 摘要构造研究工作流中的计划草稿。"""
 
     scan_result_id = _required_text(values, "scan_result_id")
     scan_result_version = _required_int(values, "scan_result_version")
@@ -1311,13 +1318,13 @@ __all__ = [
     "PlanLineageConfig",
     "PlanReviewConfig",
     "ReminderApprovalConfig",
-    "ResearchJourneyBackend",
-    "ResearchJourneyResult",
-    "ResearchToPlanJourney",
-    "ResearchToPlanJourneyConfig",
+    "ResearchToPlanWorkflow",
+    "ResearchToPlanWorkflowConfig",
+    "ResearchWorkflowBackend",
+    "ResearchWorkflowResult",
     "ReviewFeedbackDestinationOption",
     "ScanReviewConfig",
     "SecurityCandidate",
     "SecurityClarificationConfig",
-    "research_to_plan_journey_config_from_settings",
+    "research_to_plan_workflow_config_from_settings",
 ]

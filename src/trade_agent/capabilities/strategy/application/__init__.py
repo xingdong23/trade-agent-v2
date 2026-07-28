@@ -1,5 +1,6 @@
 """Strategy capability 的草稿与发布用例。"""
 
+from trade_agent.capabilities.contracts import CapabilityApplication
 from trade_agent.capabilities.strategy.contracts import (
     CapabilityCommand,
     CapabilityQuery,
@@ -10,7 +11,7 @@ from trade_agent.capabilities.strategy.contracts import (
 )
 
 
-class StrategyApplication:
+class StrategyApplication(CapabilityApplication):
     """Phase-one public application boundary."""
 
     async def execute(self, command: CapabilityCommand) -> CapabilityResult:

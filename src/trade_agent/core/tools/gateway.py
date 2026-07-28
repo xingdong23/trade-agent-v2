@@ -1,6 +1,6 @@
 """所有 Agent Tool 调用的唯一受控入口。
 
-课堂上可以把这个模块看成“服务端防火墙”：
+这个模块是 Agent 与业务能力之间的服务端策略边界：
 
 - ``ToolRegistry`` 负责回答“系统里有哪些 Tool”；
 - ``ToolPolicy`` 负责回答“当前 Agent 能不能调用它”；
@@ -15,6 +15,7 @@ from .contracts import (
     ToolError,
     ToolErrorCode,
     ToolExecutionError,
+    ToolGateway,
     ToolManifest,
     ToolProtocol,
     ToolRequest,
@@ -50,7 +51,7 @@ class ToolRegistry:
         return tuple(tool.manifest for tool in self._tools.values())
 
 
-class DefaultToolGateway:
+class DefaultToolGateway(ToolGateway):
     """把权限、校验和执行串成一次受控 Tool 调用。
 
     调用顺序固定为：

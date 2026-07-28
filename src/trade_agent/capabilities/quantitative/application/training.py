@@ -16,6 +16,18 @@ JsonScalar = str | int | float | bool | None
 
 
 class TrainingAlgorithm(StrEnum):
+    """训练与基线评测使用的稳定算法枚举。
+
+    Attributes:
+        DETERMINISTIC_RULE: 不学习参数的显式规则基线。
+        STATISTICAL_BENCHMARK: 基于标签分布的统计基线。
+        LIGHTGBM: 梯度提升树模型实现。
+        LSTM: 序列建模的循环神经网络实现。
+
+    Invariants:
+        - 枚举值写入训练任务、评测结果和模型 lineage，属于稳定协议字段。
+    """
+
     DETERMINISTIC_RULE = "deterministic_rule"
     STATISTICAL_BENCHMARK = "statistical_benchmark"
     LIGHTGBM = "lightgbm"
@@ -218,7 +230,7 @@ class ProbabilityBenchmark(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
-class DeterministicRuleBenchmark:
+class DeterministicRuleBenchmark(ProbabilityBenchmark):
     """以一个显式 feature 阈值作为不学习参数的最低规则基线。
 
     Attributes:
@@ -250,7 +262,7 @@ class DeterministicRuleBenchmark:
 
 
 @dataclass(frozen=True, slots=True)
-class StatisticalBenchmark:
+class StatisticalBenchmark(ProbabilityBenchmark):
     """使用训练标签的拉普拉斯平滑先验, 避免零概率与数据顺序影响。
 
     Attributes:

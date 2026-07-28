@@ -15,11 +15,11 @@ from .settings import (
     MarketSettings,
     ObservabilitySettings,
     OidcRoleClaimSettings,
-    PlanningJourneySettings,
     PlanningOperationSettings,
+    PlanningWorkflowSettings,
     QuantitativeModelSettings,
     ReminderSettings,
-    ResearchToPlanJourneySettings,
+    ResearchToPlanWorkflowSettings,
     WorkerSettings,
 )
 
@@ -38,10 +38,10 @@ __all__ = [
     "MarketSettings",
     "ObservabilitySettings",
     "OidcRoleClaimSettings",
-    "PlanningJourneySettings",
     "PlanningOperationSettings",
+    "PlanningWorkflowSettings",
     "QuantitativeModelSettings",
     "ReminderSettings",
-    "ResearchToPlanJourneySettings",
+    "ResearchToPlanWorkflowSettings",
     "WorkerSettings",
 ]

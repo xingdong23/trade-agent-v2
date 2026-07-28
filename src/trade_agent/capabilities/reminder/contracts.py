@@ -1,6 +1,11 @@
 """Reminder capability 的公开契约。"""
 
-from trade_agent.capabilities.contracts import CapabilityCommand, CapabilityQuery, CapabilityResult
+from trade_agent.capabilities.contracts import (
+    CapabilityCardPresenter,
+    CapabilityCommand,
+    CapabilityQuery,
+    CapabilityResult,
+)
 from trade_agent.capabilities.reminder.domain import (
     DeliveryStatus,
     ReminderObservation,
@@ -12,6 +17,7 @@ from trade_agent.capabilities.reminder.domain import (
 )
 
 __all__ = [
+    "CapabilityCardPresenter",
     "CapabilityCommand",
     "CapabilityQuery",
     "CapabilityResult",

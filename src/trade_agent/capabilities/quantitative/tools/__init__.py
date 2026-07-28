@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from trade_agent.core.llm.contracts import JsonValue
-from trade_agent.core.tools import ToolManifest, ToolRequest, ToolResult
+from trade_agent.core.tools import ToolManifest, ToolProtocol, ToolRequest, ToolResult
 from trade_agent.core.tools.identity import bind_trusted_identity, identity_fields_for_manifest
 
 
@@ -132,7 +132,7 @@ _OBJECT_OUTPUT: dict[str, JsonValue] = {
 
 
 @dataclass(frozen=True, slots=True)
-class GetPredictionTool:
+class GetPredictionTool(ToolProtocol):
     """读取单只证券已持久化量化预测的工具适配器。
 
     Attributes:
@@ -163,7 +163,7 @@ class GetPredictionTool:
 
 
 @dataclass(frozen=True, slots=True)
-class GetQuantitativeSnapshotTool:
+class GetQuantitativeSnapshotTool(ToolProtocol):
     """读取单只证券量化快照与 lineage 的工具适配器。
 
     Attributes:
@@ -196,7 +196,7 @@ class GetQuantitativeSnapshotTool:
 
 
 @dataclass(frozen=True, slots=True)
-class SubmitScanTool:
+class SubmitScanTool(ToolProtocol):
     """提交冻结输入扫描任务的工具适配器。
 
     Attributes:
@@ -258,7 +258,7 @@ class SubmitScanTool:
 
 
 @dataclass(frozen=True, slots=True)
-class GetScanStatusTool:
+class GetScanStatusTool(ToolProtocol):
     """读取扫描任务状态与进度的工具适配器。
 
     Attributes:
@@ -289,7 +289,7 @@ class GetScanStatusTool:
 
 
 @dataclass(frozen=True, slots=True)
-class ListScanResultsTool:
+class ListScanResultsTool(ToolProtocol):
     """读取已持久化扫描结果的工具适配器。
 
     Attributes:
