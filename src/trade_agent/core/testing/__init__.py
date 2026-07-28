@@ -1,4 +1,4 @@
-"""供测试和课程示例使用的确定性替身。"""
+"""供自动化测试和离线开发使用的确定性替身。"""
 
 from .fakes import FakeLLMClient, FakeToolGateway, MappingIntentClassifier
 

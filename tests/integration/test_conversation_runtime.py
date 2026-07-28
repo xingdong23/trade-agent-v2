@@ -240,7 +240,7 @@ def test_runtime_uses_injected_classification_instead_of_message_keywords(tmp_pa
     )
     classifier = MappingIntentClassifier(
         {
-            "任意课程示例文本": IntentClassification(
+            "任意自定义输入": IntentClassification(
                 Intent.PLANNING,
                 "planning.create_plan",
                 1.0,
@@ -255,7 +255,7 @@ def test_runtime_uses_injected_classification_instead_of_message_keywords(tmp_pa
     response = client.post(
         "/api/conversations/runs",
         headers={"X-User-ID": "owner-a"},
-        json={"thread_id": "injected-route", "message": "任意课程示例文本"},
+        json={"thread_id": "injected-route", "message": "任意自定义输入"},
     )
 
     assert response.status_code == 200

@@ -1,7 +1,7 @@
 """本地命令行适配器。
 
 CLI 与 HTTP API 共享同一个 application container 和会话运行时，所以它不是另一套
-业务实现。课程中可以先用 CLI 观察 JSON、HITL 和资源变化，再进入 Web/SSE 层。
+业务实现。CLI 主要用于本地运维、诊断以及直接观察 JSON、HITL 和资源变化。
 """
 
 from __future__ import annotations

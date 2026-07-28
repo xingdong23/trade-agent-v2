@@ -1,4 +1,4 @@
-"""课程源码中的模型实体和 Protocol 必须遵守结构化 docstring 契约。"""
+"""公共模型实体和 Protocol 必须遵守结构化 Docstring 契约。"""
 
 import ast
 from pathlib import Path

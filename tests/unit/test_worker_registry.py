@@ -8,7 +8,7 @@ from trade_agent.apps.worker import WorkerRegistration, WorkerRegistry
 def test_worker_registry_resolves_configured_workers_without_runtime_branches() -> None:
     registry = WorkerRegistry(
         (
-            WorkerRegistration("custom-worker", "课程示例后台处理器"),
+            WorkerRegistration("custom-worker", "自定义后台处理器"),
             WorkerRegistration("scan-worker", "扫描处理器"),
         )
     )

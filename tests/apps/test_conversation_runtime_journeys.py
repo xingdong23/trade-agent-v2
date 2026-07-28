@@ -67,9 +67,9 @@ class _EchoJourney(ConversationJourney):
                 interaction_type=InteractionType.EXCEPTION_RESOLUTION,
                 status=InteractionStatus.PENDING,
                 payload={
-                    "title": "补充课程示例",
+                    "title": "补充扩展示例",
                     "description": "输入一段文本，验证 fake journey 可以独立接入 runtime。",
-                    "text_fallback": "请输入课程示例文本。",
+                    "text_fallback": "请输入扩展示例文本。",
                 },
                 version=1,
                 thread_id=context.thread_id,
@@ -132,7 +132,7 @@ def _build_runtime(tmp_path: Path) -> tuple[ConversationRunService, DefaultHitlS
         hitl_service=hitl_service,
         intent_classifier=MappingIntentClassifier(
             {
-                "课程扩展示例": IntentClassification(
+                "自定义扩展示例": IntentClassification(
                     Intent.PLANNING,
                     "fake.echo",
                     1.0,
@@ -152,7 +152,7 @@ def test_runtime_can_extend_with_fake_journey_without_modifying_runtime(tmp_path
     started = runtime.start_run(
         owner_id="owner-a",
         thread_id="thread-a",
-        message="课程扩展示例",
+        message="自定义扩展示例",
         correlation_id="corr-1",
     )
 

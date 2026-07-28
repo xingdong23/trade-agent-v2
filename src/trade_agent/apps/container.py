@@ -4,8 +4,8 @@
 都从这里取得已经连接好的对象。领域代码只声明需要什么接口，具体使用 SQLite、
 LiteLLM 还是测试替身，由本模块在进程启动时决定。
 
-教学阅读顺序建议先看 :func:`build_application_container`，再沿着它创建的
-``ConversationRunService`` 阅读一次完整会话流程。
+``build_application_container`` 是完整运行时的装配入口，调用方不应在其他模块
+重复创建基础设施 Adapter。
 """
 
 from collections.abc import Iterable
@@ -115,8 +115,8 @@ def build_scaffold_container(
 ) -> ApplicationContainer:
     """创建不访问数据库和外部服务的最小容器。
 
-    该入口供架构测试和教学演示使用。LLM 与工具调用都使用确定性 fake，因此
-    不应该把它当作生产启动方式。
+    该入口供架构测试和轻量本地验证使用。LLM 与工具调用都使用确定性 fake，
+    因此不应该把它当作生产启动方式。
     """
     resolved_agents = tuple(agents)
     resolved_tools = tuple(capability_tools)
@@ -281,7 +281,7 @@ def _build_llm_client(settings: AppSettings) -> LLMClient:
     """根据类型化路由配置选择真实 LiteLLM adapter 或本地 fake。
 
     Production 已由 ``AppSettings`` 强制要求至少一个路由，因此不会静默落到 fake。
-    Development/Test 未配置路由时保留确定性 fake，便于离线教学与测试。
+    Development/Test 未配置路由时保留确定性 fake，支持离线开发与测试。
     """
 
     if not settings.litellm.routes:

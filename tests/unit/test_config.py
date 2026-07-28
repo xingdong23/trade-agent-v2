@@ -80,7 +80,7 @@ def test_research_to_plan_runtime_uses_typed_deployment_policy() -> None:
         {
             "checkpoint": {"namespace": "course-runtime"},
             "conversation_runtime": {
-                "unregistered_journey_message": "当前课程没有注册对应业务流程"
+                "unregistered_journey_message": "当前部署没有注册对应业务流程"
             },
             "research_to_plan_journey": {
                 "reminder_approval": {
@@ -102,7 +102,7 @@ def test_research_to_plan_runtime_uses_typed_deployment_policy() -> None:
 
     assert settings.checkpoint.namespace == "course-runtime"
     assert settings.conversation_runtime.unregistered_journey_message == (
-        "当前课程没有注册对应业务流程"
+        "当前部署没有注册对应业务流程"
     )
     assert runtime_config.reminder_approval.notification_channel == "desktop_push"
     assert runtime_config.plan_review.resource_name == "course_reviews"

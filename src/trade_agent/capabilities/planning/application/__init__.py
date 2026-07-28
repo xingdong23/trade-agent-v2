@@ -95,11 +95,8 @@ class PlanningApplication:
 class PlanningService:
     """Planning capability 的进程内确定性实现。
 
-    教学上可以把它看成“无数据库版的 application service”：
-
-    - ``_plans`` / ``_reviews`` 存状态；
-    - ``_draft_commands`` / ``_transition_commands`` / ``_review_commands`` 存幂等收据；
-    - ``Lock`` 让单进程示例也具备最小并发保护语义。
+    ``_plans`` 与 ``_reviews`` 保存进程内状态；各类 command 字典保存幂等收据；
+    ``Lock`` 保证单进程内的最小并发保护。该实现不提供跨进程持久化语义。
     """
 
     def __init__(self) -> None:

@@ -26,7 +26,7 @@ class CustomTool:
 
     manifest = ToolManifest(
         "lesson.echo",
-        "返回课程示例输入",
+        "返回自定义示例输入",
         True,
         False,
         {"type": "object", "properties": {}, "additionalProperties": False},
@@ -101,7 +101,7 @@ def test_composition_root_accepts_registered_agents_tools_and_workers(tmp_path: 
     settings = AppSettings(database=DatabaseSettings(path=tmp_path / "registries.db"))
     custom_agent = AgentManifest(
         "lesson",
-        "课程自定义 Agent",
+        "自定义 Agent",
         ModelRoute("lesson_route"),
         ("lesson.echo",),
         "lesson.prompt",
@@ -130,7 +130,7 @@ def test_deployment_policy_can_replace_manifest_tool_allowlist(tmp_path: Path) -
     )
     custom_agent = AgentManifest(
         "lesson",
-        "课程自定义 Agent",
+        "自定义 Agent",
         ModelRoute("lesson_route"),
         ("lesson.echo",),
         "lesson.prompt",

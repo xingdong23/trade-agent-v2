@@ -107,9 +107,9 @@ def test_capability_can_extend_catalog_without_modifying_core_registry() -> None
     envelope = _valid_envelope(
         kind="artifact.lesson",
         state="resolved",
-        data={"title": "课程产物", "summary": "由新 capability 注册"},
+        data={"title": "扩展产物", "summary": "由新 capability 注册"},
         actions=(),
-        text_fallback="课程产物已生成。",
+        text_fallback="扩展产物已生成。",
         catalog=custom_catalog,
     )
 
